@@ -241,4 +241,25 @@ describe('regression #4954: phase detection matches the canonical plan file name
     });
     assert.equal(result.phase, '');
   });
+
+  test('a bare PLAN.md without the {phase}-{plan}- prefix resolves no phase', () => {
+    // Deliberately no legacy fallback: execute-phase enumerates only *-PLAN.md,
+    // so a phase detected from a bare PLAN.md would be one whose plans
+    // execute-phase never runs.
+    const result = runBlock((tmpDir) => {
+      const dir = path.join(tmpDir, '.planning', 'phases', '05-bare-plan');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'PLAN.md'), '# plan\n');
+    });
+    assert.equal(result.phase, '');
+  });
+
+  test('a phase directory name containing spaces resolves verbatim', () => {
+    const result = runBlock((tmpDir) => {
+      const dir = path.join(tmpDir, '.planning', 'phases', '06-spaced phase name');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, '06-01-PLAN.md'), '# plan\n');
+    });
+    assert.equal(result.phase, '06-spaced phase name');
+  });
 });
