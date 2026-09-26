@@ -119,7 +119,12 @@ function readWorkflowConfig(projectDir: string): WorkflowConfig {
       ...wf,
       auto_advance: (wf['auto_advance'] ?? parsed['auto_advance']) as boolean | undefined,
       _auto_chain_active: (wf['_auto_chain_active'] ?? parsed['_auto_chain_active']) as boolean | undefined,
-      context_coverage_gate: (wf['context_coverage_gate'] ?? parsed['context_coverage_gate']) as boolean | string | undefined,
+      // Nested-ONLY (#4978), the config-loader `getNested` rule (#3648): this key
+      // has no legacy top-level form — the schema, `config-set` and
+      // `normalizeLegacyKeys` all reject a flat `context_coverage_gate`, and the
+      // workflow guards read `config-get workflow.context_coverage_gate`. A flat
+      // fallback here silently skipped the blocking gate the workflow saw enabled.
+      context_coverage_gate: wf['context_coverage_gate'] as boolean | string | undefined,
     };
   } catch {
     return {};

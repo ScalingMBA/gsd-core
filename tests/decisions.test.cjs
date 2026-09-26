@@ -563,6 +563,111 @@ describe('check.decision-coverage-plan — fail-loud on could-not-parse (#1365)'
   });
 });
 
+// ─── #4978: the gate toggle is read from workflow.context_coverage_gate only ──
+
+/**
+ * #4978: the gate toggle fell back to a TOP-LEVEL `context_coverage_gate` when
+ * `workflow.context_coverage_gate` was absent. No other surface accepts that
+ * flat key — `config-set` rejects it, the config loader warns it "will be
+ * ignored", `normalizeLegacyKeys` does not migrate it, and the plan-phase /
+ * verifier workflow guards read `config-get workflow.context_coverage_gate`,
+ * which never sees it. So the workflow treated the gate as ENABLED and called
+ * the check, and the check answered `skipped: true` — the blocking translation
+ * gate silently passed with uncovered decisions. The flat key must be as inert
+ * here as everywhere else: the gate answers exactly as if the key were absent.
+ */
+describe('check.decision-coverage-* — gate toggle is nested-only (#4978)', () => {
+  let tmpDir;
+  let planningDir;
+  let phaseDir;
+  let contextPath;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-4978-');
+    planningDir = path.join(tmpDir, '.planning');
+    phaseDir = path.join(planningDir, 'phases', '01-init');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    // The issue's repro: one decision, a plan that cites none.
+    writeContextFile(phaseDir, [
+      '# Context',
+      '',
+      '<decisions>',
+      '### Implementation',
+      '- **D-01:** Use OAuth 2.0 for authentication',
+      '</decisions>',
+    ].join('\n'));
+    writePlanFile(phaseDir, '01', '# Plan\n## Objective\nImplement feature without referencing any decision.\n');
+    contextPath = path.join(phaseDir, 'CONTEXT.md');
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  function runCheck(verb) {
+    const result = runGsdTools(['query', `check.${verb}`, phaseDir, contextPath], tmpDir);
+    assert.strictEqual(result.success, true, `check.${verb} must exit 0. stderr: ${result.error}`);
+    return JSON.parse(result.output);
+  }
+
+  // Both spellings the gate honors as "off" when they come from the nested key.
+  for (const flatValue of [false, 'false']) {
+    test(`plan gate: top-level context_coverage_gate: ${JSON.stringify(flatValue)} alone does not skip — D-01 reported uncovered`, () => {
+      writePlanningConfig(planningDir, {});
+      const keyAbsent = runCheck('decision-coverage-plan');
+
+      writePlanningConfig(planningDir, { context_coverage_gate: flatValue });
+      const parsed = runCheck('decision-coverage-plan');
+
+      assert.strictEqual(parsed.skipped, false,
+        `An unsupported top-level key must not disable the gate. Got: ${JSON.stringify(parsed)}`);
+      assert.strictEqual(parsed.passed, false,
+        `An uncovered decision must fail the blocking gate. Got: ${JSON.stringify(parsed)}`);
+      assert.deepStrictEqual(parsed.uncovered.map((u) => u.id), ['D-01']);
+      assert.deepStrictEqual(parsed, keyAbsent,
+        'The flat key must be inert: the answer must equal the one with no context_coverage_gate key at all');
+    });
+
+    test(`verify gate: top-level context_coverage_gate: ${JSON.stringify(flatValue)} alone does not skip — D-01 reported not honored`, () => {
+      writePlanningConfig(planningDir, {});
+      const keyAbsent = runCheck('decision-coverage-verify');
+
+      writePlanningConfig(planningDir, { context_coverage_gate: flatValue });
+      const parsed = runCheck('decision-coverage-verify');
+
+      assert.strictEqual(parsed.skipped, false,
+        `An unsupported top-level key must not disable the gate. Got: ${JSON.stringify(parsed)}`);
+      assert.deepStrictEqual(parsed.not_honored.map((u) => u.id), ['D-01']);
+      assert.deepStrictEqual(parsed, keyAbsent,
+        'The flat key must be inert: the answer must equal the one with no context_coverage_gate key at all');
+    });
+  }
+
+  test('workflow.context_coverage_gate: false still skips both gates on the same fixture', () => {
+    writePlanningConfig(planningDir, { workflow: { context_coverage_gate: false } });
+
+    const plan = runCheck('decision-coverage-plan');
+    assert.strictEqual(plan.passed, true);
+    assert.strictEqual(plan.skipped, true);
+    assert.strictEqual(plan.reason, 'workflow.context_coverage_gate is false');
+
+    const verify = runCheck('decision-coverage-verify');
+    assert.strictEqual(verify.skipped, true);
+    assert.strictEqual(verify.reason, 'workflow.context_coverage_gate is false');
+  });
+
+  test('both forms set: the nested key still decides, in either direction', () => {
+    writePlanningConfig(planningDir, { context_coverage_gate: true, workflow: { context_coverage_gate: false } });
+    const nestedOff = runCheck('decision-coverage-plan');
+    assert.strictEqual(nestedOff.skipped, true,
+      `Nested false must win over a flat true. Got: ${JSON.stringify(nestedOff)}`);
+
+    writePlanningConfig(planningDir, { context_coverage_gate: false, workflow: { context_coverage_gate: true } });
+    const nestedOn = runCheck('decision-coverage-plan');
+    assert.strictEqual(nestedOn.skipped, false,
+      `Nested true must win over a flat false. Got: ${JSON.stringify(nestedOn)}`);
+    assert.deepStrictEqual(nestedOn.uncovered.map((u) => u.id), ['D-01']);
+  });
+});
+
 describe('check.decision-coverage-plan — boundary/threshold tests (#1365)', () => {
   let tmpDir;
   let planningDir;
