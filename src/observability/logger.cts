@@ -15,6 +15,11 @@
  * No-op logger (createNoOpLogger):
  *   Silent on all events. Used as the Hub default when no logger is injected.
  *
+ * Live-seam gate (resolveDispatchLogger, #4975):
+ *   The one opt-in decision both live createHub() seams share. Resolves
+ *   `audit.enabled` for the seam's cwd and returns the default logger, or
+ *   undefined (inject nothing) when observability is off.
+ *
  * ADR-457 build-at-publish: the hand-written bin/lib/observability/logger.cjs
  * collapsed to a TypeScript source of truth. Behaviour is preserved
  * byte-for-behaviour from the prior hand-written .cjs; only types are added.
@@ -24,6 +29,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { redactEvent } from './redaction.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningWorkspace = require('../planning-workspace.cjs');
+const { planningDir, planningRoot, resolveEnvWorkstream } = planningWorkspace;
 
 const AUDIT_FILE_NAME = '.gsd-trace.jsonl';
 const PLANNING_DIR = '.planning';
@@ -48,6 +56,8 @@ function _safeStringify(value: unknown): string {
  * inject nothing (the Hub stays byte-for-byte silent, preserving the default
  * dispatch output contract, incl. --json-errors); when on, the caller injects
  * createDefaultLogger and gets the stderr-on-error line + opt-in file audit.
+ * The live seams reach it through resolveDispatchLogger, which supplies the
+ * project config — called bare, only the env var is seen (#4975).
  */
 function _isAuditEnabled(config?: { audit?: { enabled?: boolean } }): boolean {
   if (process.env['GSD_AUDIT'] === '1') return true;
@@ -168,4 +178,77 @@ function createDefaultLogger({ cwd = process.cwd(), config }: DefaultLoggerOptio
   };
 }
 
-export = { createDefaultLogger, createNoOpLogger, isAuditEnabled: _isAuditEnabled };
+// ─── Live-seam opt-in gate (#4975) ───────────────────────────────────────────
+
+type AuditConfig = { audit: { enabled: boolean } };
+
+/**
+ * The `audit.enabled` value one config file sets, if it sets one at all.
+ * An absent, unreadable, or unparseable file — or a non-object config or
+ * `audit` section — does not set it.
+ */
+function _ownAuditEnabled(configPath: string): { present: boolean; value: unknown } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch {
+    return { present: false, value: undefined };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { present: false, value: undefined };
+  }
+  const audit = (parsed as Record<string, unknown>)['audit'];
+  if (audit === null || typeof audit !== 'object' || Array.isArray(audit)) {
+    return { present: false, value: undefined };
+  }
+  return Object.prototype.hasOwnProperty.call(audit, 'enabled')
+    ? { present: true, value: (audit as Record<string, unknown>)['enabled'] }
+    : { present: false, value: undefined };
+}
+
+/**
+ * Resolve `audit.enabled` for `cwd` as the value `config-get audit.enabled`
+ * reports: the scoped config's own key wins (planningDir is project- and
+ * workstream-aware); otherwise the root config's key, but only under an active
+ * workstream — the same ladder as planning-workspace's worktreesOptedOut
+ * (#3972). Strict `=== true`, never coerced.
+ *
+ * Direct file reads, deliberately NOT loadConfig: this runs on every live
+ * dispatch, and loadConfig can rewrite config.json, spawn git, scan the
+ * capability registry, and print warnings — none of which a dispatch that
+ * never opted in may do (the default dispatch output is a stable contract,
+ * ADR-2619). Never throws: any read or path failure (including a GSD_PROJECT /
+ * GSD_WORKSTREAM value planningDir rejects) degrades to `enabled: false`, so
+ * the gate falls back to the GSD_AUDIT env var alone.
+ */
+function _readAuditConfig(cwd: string): AuditConfig {
+  try {
+    const scoped = _ownAuditEnabled(path.join(planningDir(cwd), 'config.json'));
+    if (scoped.present) return { audit: { enabled: scoped.value === true } };
+    if (resolveEnvWorkstream() !== null) {
+      const root = _ownAuditEnabled(path.join(planningRoot(cwd), 'config.json'));
+      if (root.present) return { audit: { enabled: root.value === true } };
+    }
+  } catch {
+    // Degrade to "not enabled by config" — see the contract above.
+  }
+  return { audit: { enabled: false } };
+}
+
+/**
+ * The DispatchLogger a live createHub() seam injects (#4975). Either
+ * GSD_AUDIT=1 or `audit.enabled: true` in the project config turns the opt-in
+ * audit trail (and the structured stderr line on error) on; neither turns the
+ * other off. When observability is off this returns undefined so the Hub keeps
+ * its no-op fallback and the default dispatch output — including the
+ * --json-errors envelope — stays byte-for-byte unchanged (#2620).
+ *
+ * `cwd` defaults exactly as createDefaultLogger's does, so the config that
+ * decides and the directory that receives the trail are always the same.
+ */
+function resolveDispatchLogger(cwd: string = process.cwd()): DispatchLogger | undefined {
+  const config = _readAuditConfig(cwd);
+  return _isAuditEnabled(config) ? createDefaultLogger({ cwd, config }) : undefined;
+}
+
+export = { createDefaultLogger, createNoOpLogger, isAuditEnabled: _isAuditEnabled, resolveDispatchLogger };

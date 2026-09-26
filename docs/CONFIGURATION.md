@@ -116,6 +116,9 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
   "security": {
     "injection_blocking": false
   },
+  "audit": {
+    "enabled": false
+  },
   "project_code": null,
   "agent_skills": {},
   "agent_skills_security": {
@@ -2359,6 +2362,8 @@ GSD_AUDIT=1 gsd plan
   }
 }
 ```
+
+Or set it with `gsd config-set audit.enabled true` — the value must be a boolean. The key is read from the project config, the same value `config-get audit.enabled` reports (a workstream's own setting wins over the root config's). Either source turns the trail on and neither turns the other off: `GSD_AUDIT=0` does not override `audit.enabled: true`.
 
 **Audit file location:** `.planning/.gsd-trace.jsonl` (gitignored)
 
