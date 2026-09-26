@@ -2521,6 +2521,72 @@ describe('cmdInitNewProject', () => {
   });
 });
 
+// #4976: init new-project's API-key availability probes read the same
+// GSD_HOME-resolved store ($GSD_HOME/.gsd, GSD_HOME defaulting to the home
+// directory) that config-new-project seeds the project config from.
+// HOME/USERPROFILE point at a separate decoy store, so the real home is never
+// probed and a key file there cannot satisfy a probe that should read $GSD_HOME.
+describe('cmdInitNewProject: API-key probes resolve through GSD_HOME (#4976)', () => {
+  let tmpDir;
+  let gsdHome;
+  let decoyHome;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+    gsdHome = createTempDir('gsd-4976-gsd-home-');
+    decoyHome = createTempDir('gsd-4976-os-home-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+    cleanup(gsdHome);
+    cleanup(decoyHome);
+  });
+
+  const API_KEY_PROBES = [
+    { file: 'brave_api_key', field: 'brave_search_available', env: 'BRAVE_API_KEY' },
+    { file: 'firecrawl_api_key', field: 'firecrawl_available', env: 'FIRECRAWL_API_KEY' },
+    { file: 'exa_api_key', field: 'exa_search_available', env: 'EXA_API_KEY' },
+  ];
+
+  function writeKeyFiles(home) {
+    fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+    for (const probe of API_KEY_PROBES) {
+      fs.writeFileSync(path.join(home, '.gsd', probe.file), 'test-key', 'utf-8');
+    }
+  }
+
+  function probeEnv() {
+    const env = { GSD_HOME: gsdHome, HOME: decoyHome, USERPROFILE: decoyHome };
+    for (const probe of API_KEY_PROBES) env[probe.env] = '';
+    return env;
+  }
+
+  test('reports a provider available from a key file under $GSD_HOME/.gsd', () => {
+    writeKeyFiles(gsdHome);
+
+    const result = runGsdTools('init new-project', tmpDir, probeEnv());
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    for (const probe of API_KEY_PROBES) {
+      assert.strictEqual(output[probe.field], true, `${probe.field} must come from $GSD_HOME/.gsd/${probe.file}`);
+    }
+  });
+
+  test('ignores key files in the home directory store when GSD_HOME is set', () => {
+    writeKeyFiles(decoyHome);
+
+    const result = runGsdTools('init new-project', tmpDir, probeEnv());
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    for (const probe of API_KEY_PROBES) {
+      assert.strictEqual(output[probe.field], false, `${probe.field} must not be read from the home directory store`);
+    }
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // cmdInitNewMilestone (INIT-06)
 // ─────────────────────────────────────────────────────────────────────────────
