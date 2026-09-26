@@ -666,6 +666,48 @@ describe('check.decision-coverage-* — gate toggle is nested-only (#4978)', () 
       `Nested true must win over a flat false. Got: ${JSON.stringify(nestedOn)}`);
     assert.deepStrictEqual(nestedOn.uncovered.map((u) => u.id), ['D-01']);
   });
+
+  // QA matrix — scalar where an object is expected: a `workflow` value that is
+  // not an object carries no nested key, and must not re-open the flat fallback.
+  for (const workflowValue of [null, false, 'off', []]) {
+    test(`workflow: ${JSON.stringify(workflowValue)} beside a top-level false still runs the gate`, () => {
+      writePlanningConfig(planningDir, {});
+      const keyAbsent = runCheck('decision-coverage-plan');
+
+      writePlanningConfig(planningDir, { workflow: workflowValue, context_coverage_gate: false });
+      const parsed = runCheck('decision-coverage-plan');
+
+      assert.strictEqual(parsed.skipped, false,
+        `A non-object workflow must not defer to the flat key. Got: ${JSON.stringify(parsed)}`);
+      assert.deepStrictEqual(parsed, keyAbsent);
+    });
+  }
+
+  // QA matrix — empty input: an explicit nested null is "unset", not a reason
+  // to consult the flat key.
+  test('workflow.context_coverage_gate: null beside a top-level false still runs the gate', () => {
+    writePlanningConfig(planningDir, {});
+    const keyAbsent = runCheck('decision-coverage-plan');
+
+    writePlanningConfig(planningDir, { workflow: { context_coverage_gate: null }, context_coverage_gate: false });
+    const parsed = runCheck('decision-coverage-plan');
+
+    assert.strictEqual(parsed.skipped, false,
+      `A nested null must not defer to the flat key. Got: ${JSON.stringify(parsed)}`);
+    assert.deepStrictEqual(parsed, keyAbsent);
+  });
+
+  // QA matrix — malformed input: an unparseable config.json must degrade to
+  // "gate on" (fail closed), never to a skip.
+  test('an unparseable config.json leaves the gate on — D-01 reported uncovered', () => {
+    fs.writeFileSync(path.join(planningDir, 'config.json'), '{"context_coverage_gate": false');
+    const parsed = runCheck('decision-coverage-plan');
+
+    assert.strictEqual(parsed.skipped, false,
+      `A malformed config must not disable the gate. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.passed, false);
+    assert.deepStrictEqual(parsed.uncovered.map((u) => u.id), ['D-01']);
+  });
 });
 
 describe('check.decision-coverage-plan — boundary/threshold tests (#1365)', () => {
