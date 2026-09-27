@@ -13,6 +13,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const fc = require('fast-check');
 
 const {
   createDefaultLogger,
@@ -490,5 +491,48 @@ describe('resolveDispatchLogger — config audit.enabled opt-in gate (#4975)', (
 
     process.env.GSD_AUDIT = '1';
     assert.equal(gateVerdict(), VERDICT.AUDIT_TRAIL, 'GSD_AUDIT=1 still works when the config read degrades');
+  });
+
+  // ── Properties (RULESET.TESTS.property-based-testing) ──────────────────────
+  // The gate parses arbitrary JSON config shapes into one strict boolean. The
+  // invariant: with GSD_AUDIT unset, a logger is injected iff the resolved
+  // `audit.enabled` value is exactly `true`; with GSD_AUDIT=1, always. Values
+  // come from fast-check's JSON arbitraries, never from the gate's own writer.
+  // Seed pinned to the issue number and runs bounded, so a failure replays.
+  const PROPERTY_RUNS = { seed: 4975, numRuns: 100 };
+  const NON_OBJECT = fc.oneof(
+    fc.constant(null), fc.boolean(), fc.integer(), fc.double({ noNaN: true, noDefaultInfinity: true }),
+    fc.string(), fc.array(fc.jsonValue(), { maxLength: 3 }),
+  );
+
+  test('property: a logger is injected iff audit.enabled is exactly true (GSD_AUDIT unset)', () => {
+    fc.assert(
+      fc.property(fc.oneof(fc.constant(true), fc.jsonValue()), (value) => {
+        writeConfig('.planning', JSON.stringify({ audit: { enabled: value } }));
+        return (resolveDispatchLogger(tmpDir) !== undefined) === (value === true);
+      }),
+      PROPERTY_RUNS,
+    );
+  });
+
+  test('property: a non-object audit section or config root never injects a logger (GSD_AUDIT unset)', () => {
+    fc.assert(
+      fc.property(NON_OBJECT, fc.boolean(), (shape, atRoot) => {
+        writeConfig('.planning', JSON.stringify(atRoot ? shape : { audit: shape }));
+        return resolveDispatchLogger(tmpDir) === undefined;
+      }),
+      PROPERTY_RUNS,
+    );
+  });
+
+  test('property: GSD_AUDIT=1 injects a logger whatever the config content', () => {
+    process.env.GSD_AUDIT = '1';
+    fc.assert(
+      fc.property(fc.oneof(fc.string(), fc.jsonValue().map((v) => JSON.stringify(v))), (text) => {
+        writeConfig('.planning', text);
+        return resolveDispatchLogger(tmpDir) !== undefined;
+      }),
+      PROPERTY_RUNS,
+    );
   });
 });
