@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const processSeam = require('./helpers/process-seam.cjs');
-const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter, captureFdSync, homeSandboxEnv } = require('./helpers.cjs');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter, captureFdSync, homeSandboxEnv, TEST_ENV_BASE } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
@@ -4475,8 +4475,13 @@ describe('init section manifest', () => {
       fs.writeFileSync(configPath, typeof shape === 'string' ? shape : JSON.stringify(shape));
     }
 
+    /**
+     * TEST_ENV_BASE blanks every GSD location var — GSD_PROJECT and GSD_WORKSTREAM
+     * included — so an ambient scope exported by the developer's shell can never
+     * redirect planningDir; a case's own `extra` scope is applied after it.
+     */
     function hermeticEnv(dir, extra = {}) {
-      return { GSD_RUNTIME: 'claude', HOME: dir, USERPROFILE: dir, ...extra };
+      return { ...TEST_ENV_BASE, GSD_RUNTIME: 'claude', HOME: dir, USERPROFILE: dir, ...extra };
     }
 
     /** Which partition of the quick manifest holds the pre-dispatch step — exactly one of them must. */
