@@ -593,3 +593,99 @@ describe('gsd-secret-read-guard: container --env-file exemption (#4639)', () => 
     block("bash -c 'cat .env.foundation'");
   });
 });
+
+describe('gsd-secret-read-guard: name-only git pathspecs and copy destinations (#4856)', () => {
+  // `git check-ignore`, `git ls-files` and `git rm --cached` report or drop a
+  // path's ignore / tracking status without printing the file, and a `cp`/`mv`
+  // whose secret name is only the destination writes that name instead of
+  // reading it. Only those operand positions are exempt: option values, other
+  // git subcommands and every other operand are still checked, and an option
+  // the exemption does not list fails closed.
+  const allows = [
+    // The issue's four commands and the triage acceptance criteria.
+    'git check-ignore -v .env',
+    'git ls-files --error-unmatch .env',
+    'git rm --cached .env',
+    'cp .env.example .env',
+    'git check-ignore -v .env.production',
+    'mv .env.example .env',
+    // Pathspec shapes: several names, `--`, clustered flags, and git's own
+    // option permutation (`--cached` after the pathspec is still the option).
+    'git check-ignore -q .env .secrets',
+    'git ls-files -- .env',
+    'git ls-files -co --exclude-standard .env.local',
+    'git rm -r --cached -- .secrets',
+    'git rm .env --cached',
+    // Global options before the subcommand.
+    'git -C /p check-ignore -v .env',
+    'git --no-pager -c core.quotepath=off ls-files .env',
+    'git --git-dir=/p/.git rm --cached .env',
+    // Prefix wrappers, compounds and nested shells reach the same exemption.
+    'sudo git rm --cached .env',
+    'cd /p && git check-ignore -q .env || echo tracked',
+    "bash -c 'git rm --cached .env'",
+    // Listed no-value flags and `--` ahead of exactly two operands.
+    'cp -n .env.example .env',
+    'cp -fv .env.example .env',
+    'mv -i -- .env.example config/.env.local',
+  ];
+  for (const cmd of allows) {
+    test(`allows ${JSON.stringify(cmd)}`, () => {
+      assertAllowed(runHook(bash(cmd)), cmd);
+    });
+  }
+
+  const blocks = [
+    // Content-revealing git subcommands stay denied (the issue's list).
+    ['git diff -- .env', '.env'],
+    ['git log -p -- .env', '.env'],
+    ['git blame .env', '.env'],
+    ['git cat-file -p :.env', ':.env'],
+    ['git grep KEY -- .env', '.env'],
+    // `git rm` is exempt only with `--cached`; after `--` it is a pathspec.
+    ['git rm .env', '.env'],
+    ['git rm -- --cached .env', '.env'],
+    // An option value is not a pathspec. `--pathspec-from-file` echoes the
+    // file's lines in its "did not match" error, so its value stays checked,
+    // and any unlisted option — including a cluster ending in the
+    // value-taking `-X` — withdraws the exemption from the whole segment.
+    ['git rm --cached --pathspec-from-file=.env', '--pathspec-from-file=.env'],
+    ['git ls-files --exclude-from=.env', '--exclude-from=.env'],
+    ['git ls-files -X .env', '.env'],
+    ['git ls-files -ciX .env', '.env'],
+    // Global option values stay checked, `-C` consumes its value (so the
+    // subcommand below is `show`), and an unknown global option fails closed.
+    ['git -C .secrets ls-files .env', '.secrets'],
+    ['git -C ls-files show HEAD:.env', 'HEAD:.env'],
+    ['git --frobnicate ls-files .env', '.env'],
+    // The exemption never reaches another segment, a substitution or a redirect.
+    ['git ls-files .env && cat .env', '.env'],
+    ['git check-ignore -v "$(cat .env)"', '.env'],
+    ['git check-ignore --stdin < .env', '.env'],
+    ['git ls-files .env | xargs cat', '.env'],
+    ['cp .env.example .env && cat .env', '.env'],
+    // cp / mv: a secret source stays denied.
+    ['mv .env backup', '.env'],
+    ['cp .env.local .env', '.env.local'],
+    // More than one source, or `-t`, makes the secret a source.
+    ['cp .env.example .env /tmp', '.env'],
+    ['cp -t /tmp .env.example .env', '.env'],
+    ['cp --target-directory=/tmp .env.example .env', '.env'],
+    // Even a listed option after the operands: under POSIXLY_CORRECT it is
+    // the destination directory and `.env` becomes a source.
+    ['cp .env.example .env -f', '.env'],
+    // A backup keeps the old secret as `.env~`, a name the guard does not classify.
+    ['cp -b .env.example .env', '.env'],
+    ['cp --backup=numbered .env.example .env', '.env'],
+    ['mv -S .bak .env.example .env', '.env'],
+    // A link or an exchange makes the destination share or swap the secret.
+    ['cp -s .env.example .env', '.env'],
+    ['cp -l .env.example .env', '.env'],
+    ['mv --exchange .env.example .env', '.env'],
+  ];
+  for (const [cmd, expectedPath] of blocks) {
+    test(`blocks ${JSON.stringify(cmd)}`, () => {
+      assertBlocked(runHook(bash(cmd)), cmd, { tool: 'Bash', path: expectedPath });
+    });
+  }
+});
