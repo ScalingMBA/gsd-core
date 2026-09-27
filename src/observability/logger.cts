@@ -31,7 +31,7 @@ import path from 'node:path';
 import { redactEvent } from './redaction.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('../planning-workspace.cjs');
-const { planningDir, planningRoot, resolveEnvWorkstream } = planningWorkspace;
+const { readScopedConfigValue } = planningWorkspace;
 
 const AUDIT_FILE_NAME = '.gsd-trace.jsonl';
 const PLANNING_DIR = '.planning';
@@ -183,56 +183,23 @@ function createDefaultLogger({ cwd = process.cwd(), config }: DefaultLoggerOptio
 type AuditConfig = { audit: { enabled: boolean } };
 
 /**
- * The `audit.enabled` value one config file sets, if it sets one at all.
- * An absent, unreadable, or unparseable file — or a non-object config or
- * `audit` section — does not set it.
- */
-function _ownAuditEnabled(configPath: string): { present: boolean; value: unknown } {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-  } catch {
-    return { present: false, value: undefined };
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return { present: false, value: undefined };
-  }
-  const audit = (parsed as Record<string, unknown>)['audit'];
-  if (audit === null || typeof audit !== 'object' || Array.isArray(audit)) {
-    return { present: false, value: undefined };
-  }
-  return Object.prototype.hasOwnProperty.call(audit, 'enabled')
-    ? { present: true, value: (audit as Record<string, unknown>)['enabled'] }
-    : { present: false, value: undefined };
-}
-
-/**
  * Resolve `audit.enabled` for `cwd` as the value `config-get audit.enabled`
- * reports: the scoped config's own key wins (planningDir is project- and
- * workstream-aware); otherwise the root config's key, but only under an active
- * workstream — the same ladder as planning-workspace's worktreesOptedOut
- * (#3972). Strict `=== true`, never coerced.
+ * reports, through planning-workspace's readScopedConfigValue — the one
+ * scope-aware ladder worktreesOptedOut (#3972) reads too, so the two gates
+ * can never resolve the same config differently. Strict `=== true`, never
+ * coerced.
  *
  * Direct file reads, deliberately NOT loadConfig: this runs on every live
  * dispatch, and loadConfig can rewrite config.json, spawn git, scan the
  * capability registry, and print warnings — none of which a dispatch that
  * never opted in may do (the default dispatch output is a stable contract,
- * ADR-2619). Never throws: any read or path failure (including a GSD_PROJECT /
- * GSD_WORKSTREAM value planningDir rejects) degrades to `enabled: false`, so
- * the gate falls back to the GSD_AUDIT env var alone.
+ * ADR-2619). Never throws: any read or path failure resolves to "not
+ * present", i.e. `enabled: false`, so the gate falls back to the GSD_AUDIT
+ * env var alone.
  */
 function _readAuditConfig(cwd: string): AuditConfig {
-  try {
-    const scoped = _ownAuditEnabled(path.join(planningDir(cwd), 'config.json'));
-    if (scoped.present) return { audit: { enabled: scoped.value === true } };
-    if (resolveEnvWorkstream() !== null) {
-      const root = _ownAuditEnabled(path.join(planningRoot(cwd), 'config.json'));
-      if (root.present) return { audit: { enabled: root.value === true } };
-    }
-  } catch {
-    // Degrade to "not enabled by config" — see the contract above.
-  }
-  return { audit: { enabled: false } };
+  const { present, value } = readScopedConfigValue(cwd, ['audit', 'enabled']);
+  return { audit: { enabled: present && value === true } };
 }
 
 /**
