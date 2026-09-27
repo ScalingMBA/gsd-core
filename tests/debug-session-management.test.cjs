@@ -10,6 +10,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 const {
   convertClaudeToCodexMarkdown,
   getCodexSkillAdapterHeader,
@@ -600,4 +602,62 @@ describe('#3448 debug auto-resume must thread the recorded next_action', () => {
       );
     });
   });
+});
+
+describe('#5011: active-session detection lists sessions, never the knowledge base', () => {
+  const CALL_SITES = ['gsd-core/workflows/debug.md', 'agents/gsd-debugger.md'];
+
+  // The one line each call site runs to enumerate active sessions.
+  function activeSessionCommand(relPath) {
+    const content = fs.readFileSync(path.join(process.cwd(), relPath), 'utf8');
+    const lines = content.split(/\r?\n/).filter((line) => line.startsWith('ls .planning/debug/*.md'));
+    assert.strictEqual(lines.length, 1, `${relPath} must enumerate active sessions with exactly one ls .planning/debug/*.md line`);
+    return lines[0];
+  }
+
+  // The file gsd-debugger's archive_session step appends resolved sessions to.
+  function knowledgeBaseName() {
+    const agent = fs.readFileSync(path.join(process.cwd(), 'agents/gsd-debugger.md'), 'utf8');
+    const match = agent.match(/append to `\.planning\/debug\/([^`/]{1,100}\.md)`/);
+    assert.ok(match, 'gsd-debugger archive_session must name the knowledge-base file it appends to');
+    return match[1];
+  }
+
+  function debugDirFixture(t, sessions) {
+    const project = createTempDir('gsd-5011-');
+    t.after(() => cleanup(project));
+    const debugDir = path.join(project, '.planning', 'debug');
+    fs.mkdirSync(path.join(debugDir, 'resolved'), { recursive: true });
+    fs.writeFileSync(path.join(debugDir, knowledgeBaseName()), '# GSD Debug Knowledge Base\n');
+    fs.writeFileSync(path.join(debugDir, 'resolved', 'fixed-login.md'), '---\nstatus: resolved\n---\n');
+    for (const slug of sessions) {
+      fs.writeFileSync(path.join(debugDir, `${slug}.md`), '---\nstatus: investigating\n---\n');
+    }
+    return project;
+  }
+
+  function listedSessions(relPath, project) {
+    const result = runHook('-c', [activeSessionCommand(relPath)], { interpreter: 'bash', cwd: project });
+    return result.stdout.split(/\r?\n/).filter(Boolean).sort();
+  }
+
+  test('both call sites run the same command', () => {
+    assert.strictEqual(activeSessionCommand(CALL_SITES[0]), activeSessionCommand(CALL_SITES[1]));
+  });
+
+  for (const relPath of CALL_SITES) {
+    test(`${relPath}: every active session is listed, the knowledge base is not`, (t) => {
+      // A slug containing "resolved" is still an active session.
+      const project = debugDirFixture(t, ['auth-token-null', 'unresolved-promise-hang']);
+      assert.deepStrictEqual(listedSessions(relPath, project), [
+        '.planning/debug/auth-token-null.md',
+        '.planning/debug/unresolved-promise-hang.md',
+      ]);
+    });
+
+    test(`${relPath}: with every session resolved, nothing is listed`, (t) => {
+      const project = debugDirFixture(t, []);
+      assert.deepStrictEqual(listedSessions(relPath, project), []);
+    });
+  }
 });
