@@ -41,7 +41,7 @@ Phase 1 of the vertical-mvp-slice PRD shipped the planner-side machinery; this c
 <context>
 Phase number: the `<arguments>` block (required — integer or decimal like `2.1`)
 
-The phase must already exist in ROADMAP.md (created via `/gsd new-project`, `/gsd add-phase`, or `/gsd insert-phase`). This command does not create new phases — it converts an existing phase to MVP mode.
+The phase must already exist in ROADMAP.md (created via `/gsd:new-project`, `/gsd:phase`, or `/gsd:phase --insert`). This command does not create new phases — it converts an existing phase to MVP mode.
 </context>
 
 <process>
