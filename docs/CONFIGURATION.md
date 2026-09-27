@@ -2365,6 +2365,12 @@ GSD_AUDIT=1 gsd plan
 
 Or set it with `gsd config-set audit.enabled true` — the value must be a boolean. The key is read from the project config, the same value `config-get audit.enabled` reports (a workstream's own setting wins over the root config's). Either source turns the trail on and neither turns the other off: `GSD_AUDIT=0` does not override `audit.enabled: true`.
 
+#### Settings
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `audit.enabled` | boolean | `false` | Opt in to the dispatch audit trail. Strict boolean: only `true` enables it; any other value (including the string `"true"`) leaves it off. Resolved like `config-get audit.enabled` — the scoped config wins, the root key is inherited under `GSD_WORKSTREAM`. `GSD_AUDIT=1` enables the trail independently. |
+
 **Audit file location:** `.planning/.gsd-trace.jsonl` (gitignored)
 
 Each line is a full `DispatchEvent` JSON object containing both `traceId` (a unique UUID v4 per dispatch) and `parentTraceId` (present when a caller passes `req.parentTraceId` into `Hub.dispatch`). A future init-composer (Phase 2) will wire `parentTraceId` automatically so that all child dispatches of a single top-level invocation share a common parent; until then, leaf dispatches emit `parentTraceId: undefined`. You can correlate child events to a parent by filtering the audit file on `parentTraceId === <rootTraceId>`. The file is append-only and never truncated; rotate or remove it manually when desired. `parentTraceId` must be a canonical UUID v4 (RFC 4122, format `xxxxxxxx-xxxx-4xxx-[89ab]xxx-xxxxxxxxxxxx`); values that do not match this format are silently dropped from the emitted event and will not appear in audit output.
