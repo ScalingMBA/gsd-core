@@ -11,7 +11,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup, delay, homeSandboxEnv } = require('./helpers.cjs');
+const { runGsdTools, createTempDir, createTempProject, cleanup, delay, withIsolatedProcessState, homeSandboxEnv } = require('./helpers.cjs');
 
 // ─── ADR-612 PR-5: phase_id_convention enum validation ──────────────────────
 
@@ -189,8 +189,8 @@ describe('config-set command', () => {
 
   beforeEach(() => {
     tmpDir = createTempProject();
-    // Create initial config
-    runGsdTools('config-ensure-section', tmpDir);
+    // Create initial config — sandbox HOME to avoid global defaults (#5016)
+    runGsdTools('config-ensure-section', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
   });
 
   afterEach(() => {
@@ -337,9 +337,14 @@ describe('config-set command', () => {
 describe('config-set git.protected_branches (#3552)', () => {
   let tmpDir;
 
+  // Sandbox HOME so the seed does not inherit the developer's ~/.gsd/defaults.json (#5016)
+  function seedProjectConfig(dir) {
+    return runGsdTools('config-ensure-section', dir, { HOME: dir, USERPROFILE: dir });
+  }
+
   beforeEach(() => {
     tmpDir = createTempProject();
-    runGsdTools('config-ensure-section', tmpDir);
+    seedProjectConfig(tmpDir);
   });
 
   afterEach(() => {
@@ -412,6 +417,35 @@ describe('config-set git.protected_branches (#3552)', () => {
     assert.ok(
       !Object.prototype.hasOwnProperty.call(readConfig(tmpDir).git, 'protected_branches'),
       'git.protected_branches must be absent after unset',
+    );
+  });
+
+  test('#5016: the seed ignores protected_branches in the ambient ~/.gsd/defaults.json', (t) => {
+    const ambientHome = createTempDir('gsd-5016-ambient-home-');
+    t.after(() => cleanup(ambientHome));
+    fs.mkdirSync(path.join(ambientHome, '.gsd'));
+    fs.writeFileSync(
+      path.join(ambientHome, '.gsd', 'defaults.json'),
+      JSON.stringify({ git: { protected_branches: ['release'] } }),
+    );
+    const controlDir = createTempProject();
+    const seededDir = createTempProject();
+    t.after(() => { cleanup(controlDir); cleanup(seededDir); });
+
+    const [control, seeded] = withIsolatedProcessState(() => {
+      process.env.HOME = ambientHome;
+      process.env.USERPROFILE = ambientHome;
+      return [runGsdTools('config-ensure-section', controlDir), seedProjectConfig(seededDir)];
+    });
+
+    // Positive control: an unsandboxed seed must pick up the canary, or the
+    // assertion below would pass without proving anything.
+    assert.ok(control.success, `Control seed failed: ${control.error}`);
+    assert.deepStrictEqual(readConfig(controlDir).git.protected_branches, ['release']);
+    assert.ok(seeded.success, `Seed failed: ${seeded.error}`);
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(readConfig(seededDir).git, 'protected_branches'),
+      'the block seed must not inherit protected_branches from the ambient defaults.json',
     );
   });
 });
@@ -1200,7 +1234,8 @@ describe('config-set workflow.skip_discuss', () => {
 
   beforeEach(() => {
     tmpDir = createTempProject();
-    runGsdTools('config-ensure-section', tmpDir);
+    // Sandbox HOME to avoid global defaults (#5016)
+    runGsdTools('config-ensure-section', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
   });
 
   afterEach(() => {
