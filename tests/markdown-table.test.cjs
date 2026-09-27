@@ -624,6 +624,21 @@ describe('CLI: quick-tasks-append (#3356)', () => {
     assert.ok(/^\| 1 \| Fix thing \| .* \| — \|$/.test(out.row), `expected the ordinal + em-dash fallback, got: ${out.row}`);
   });
 
+  test('#4905: the Date column is the pinned local day, not the UTC day or the real day', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    writeState(tmpDir, 25);
+
+    // 2020-06-15T02:00Z is 2020-06-14 21:00 in America/Chicago: the local and
+    // UTC calendar days differ, and neither is the real day.
+    const r = runGsdTools(['quick-tasks-append', '--task', 'Fix thing'], tmpDir, {
+      GSD_TEST_MODE: '1', GSD_NOW_MS: '1592186400000', TZ: 'America/Chicago',
+    });
+    assert.ok(r.success, `quick-tasks-append should succeed: ${r.error}`);
+    const { row } = JSON.parse(r.output);
+    assert.ok(row.startsWith('| 1 | Fix thing | 2020-06-14 |'), `expected the pinned local day 2020-06-14, got: ${row}`);
+  });
+
   test('defect 2: a body-only append does not force a full progress re-derive — a curated total_phases divergent from disk survives', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
