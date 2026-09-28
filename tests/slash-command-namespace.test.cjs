@@ -1530,4 +1530,37 @@ describe('bug #3683 — workflow/reference colon-namespace leak (Claude local in
       assert.deepStrictEqual(violations, [], 'use /gsd:phase "<description>" or /gsd:phase --insert <after-phase> "<description>"');
     });
   });
+
+  // `/gsd <cmd>` (a space, not `:` or `-`) is a spelling no runtime registers:
+  // there is no bare /gsd command to take <cmd> as its argument. Built from the
+  // LIVE command names, so it flags a dead spelling of a real command and
+  // leaves prose such as "the /gsd namespace" alone.
+  const LIVE_COMMANDS = new Set(
+    fs.readdirSync(path.join(ROOT, 'commands', 'gsd')).filter((name) => name.endsWith('.md')).map((name) => name.slice(0, -3)),
+  );
+  const SPACE_SPELLING = /(?:^|[^A-Za-z0-9_./-])\/gsd ([a-z][a-z0-9-]*)(?![A-Za-z0-9_-])/g;
+
+  function spaceSpelledCommands(line) {
+    return [...line.matchAll(SPACE_SPELLING)].map((match) => match[1]).filter((name) => LIVE_COMMANDS.has(name));
+  }
+
+  describe('#5002: no shipped file spells a live command as `/gsd <cmd>`', () => {
+    test('the pattern flags live commands only', () => {
+      assert.ok(LIVE_COMMANDS.has('plan-phase') && LIVE_COMMANDS.has('mvp-phase'), 'the live command set must be read from commands/gsd/');
+      assert.deepStrictEqual(spaceSpelledCommands('Invoke `/gsd plan-phase 3`, then /gsd mvp-phase 2'), ['plan-phase', 'mvp-phase']);
+      for (const legitimate of ['/gsd:plan-phase 3', '/gsd-plan-phase 3', 'the /gsd namespace', '~/.claude/gsd plan-phase', '/gsd plan-phases']) {
+        assert.deepStrictEqual(spaceSpelledCommands(legitimate), [], legitimate);
+      }
+    });
+
+    test('no shipped line spells a live command with a space', () => {
+      const violations = [];
+      for (const file of shippedFiles) {
+        fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, index) => {
+          for (const name of spaceSpelledCommands(line)) violations.push(`${relative(file)}:${index + 1}: /gsd ${name}`);
+        });
+      }
+      assert.deepStrictEqual(violations, [], 'use /gsd:<cmd> in source artifacts (skills/ is generated from commands/gsd/)');
+    });
+  });
 }
