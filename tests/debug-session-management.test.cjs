@@ -12,6 +12,7 @@ const path = require('node:path');
 const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
+const { loadShipPrefixes } = require('../scripts/diff-touches-shipped-paths.cjs');
 const {
   convertClaudeToCodexMarkdown,
   getCodexSkillAdapterHeader,
@@ -605,14 +606,46 @@ describe('#3448 debug auto-resume must thread the recorded next_action', () => {
 });
 
 describe('#5011: active-session detection lists sessions, never the knowledge base', () => {
-  const CALL_SITES = ['gsd-core/workflows/debug.md', 'agents/gsd-debugger.md'];
+  const SESSION_GLOB = '.planning/debug/*.md';
 
-  // The one line each call site runs to enumerate active sessions.
-  function activeSessionCommand(relPath) {
-    const content = fs.readFileSync(path.join(process.cwd(), relPath), 'utf8');
-    const lines = content.split(/\r?\n/).filter((line) => line.startsWith('ls .planning/debug/*.md'));
-    assert.strictEqual(lines.length, 1, `${relPath} must enumerate active sessions with exactly one ls .planning/debug/*.md line`);
-    return lines[0];
+  // Every markdown file the package ships (package.json `files`, the npm pack whitelist).
+  function shippedMarkdownFiles() {
+    const files = [];
+    for (const entry of loadShipPrefixes(path.join(process.cwd(), 'package.json'))) {
+      if (entry.startsWith('!')) continue;
+      const abs = path.join(process.cwd(), entry);
+      const stat = fs.statSync(abs, { throwIfNoEntry: false });
+      if (stat?.isDirectory()) {
+        for (const rel of fs.readdirSync(abs, { recursive: true })) {
+          if (rel.endsWith('.md')) files.push(path.posix.join(entry, rel.split(path.sep).join('/')));
+        }
+      } else if (stat && entry.endsWith('.md')) {
+        files.push(entry);
+      }
+    }
+    return files;
+  }
+
+  // The command a line runs: the backtick span naming the glob when the line
+  // is prose (`- Check …: \`cmd\``), otherwise the whole line (a fenced line).
+  function commandOn(line) {
+    const span = line.match(/`([^`]*\.planning\/debug\/\*\.md[^`]*)`/);
+    return span ? span[1] : line.trim();
+  }
+
+  // Every shipped line that enumerates the debug directory is a session
+  // reader. Derived from the shipped tree, not listed by hand, so a reader
+  // added anywhere — a command, a workflow, an agent, a generated skill — is
+  // held to the same rule the day it lands.
+  function sessionReaders() {
+    const readers = [];
+    for (const relPath of shippedMarkdownFiles()) {
+      const lines = fs.readFileSync(path.join(process.cwd(), relPath), 'utf8').split(/\r?\n/);
+      lines.forEach((line, index) => {
+        if (line.includes(SESSION_GLOB)) readers.push({ where: `${relPath}:${index + 1}`, command: commandOn(line) });
+      });
+    }
+    return readers;
   }
 
   // The file gsd-debugger's archive_session step appends resolved sessions to.
@@ -636,28 +669,39 @@ describe('#5011: active-session detection lists sessions, never the knowledge ba
     return project;
   }
 
-  function listedSessions(relPath, project) {
-    const result = runHook('-c', [activeSessionCommand(relPath)], { interpreter: 'bash', cwd: project });
-    return result.stdout.split(/\r?\n/).filter(Boolean).sort();
+  function readerOutput(command, project) {
+    const result = runHook('-c', [command], { interpreter: 'bash', cwd: project });
+    return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).sort();
   }
 
-  test('both call sites run the same command', () => {
-    assert.strictEqual(activeSessionCommand(CALL_SITES[0]), activeSessionCommand(CALL_SITES[1]));
+  // A listing reader prints the active sessions; a counting reader (`| wc -l`) prints how many.
+  function expectedOutput(command, slugs) {
+    const listed = slugs.map((slug) => `.planning/debug/${slug}.md`).sort();
+    return /\|\s*wc -l\s*$/.test(command) ? [String(listed.length)] : listed;
+  }
+
+  const READERS = sessionReaders();
+
+  test('the scan finds the readers #5011 names, so it is not vacuous', () => {
+    const files = new Set(READERS.map(({ where }) => where.replace(/:\d+$/, '')));
+    for (const relPath of ['gsd-core/workflows/debug.md', 'agents/gsd-debugger.md']) {
+      assert.ok(files.has(relPath), `${relPath} must be found as a session reader`);
+    }
   });
 
-  for (const relPath of CALL_SITES) {
-    test(`${relPath}: every active session is listed, the knowledge base is not`, (t) => {
-      // A slug containing "resolved" is still an active session.
-      const project = debugDirFixture(t, ['auth-token-null', 'unresolved-promise-hang']);
-      assert.deepStrictEqual(listedSessions(relPath, project), [
-        '.planning/debug/auth-token-null.md',
-        '.planning/debug/unresolved-promise-hang.md',
-      ]);
+  for (const { where, command } of READERS) {
+    test(`${where}: every active session is counted, the knowledge base is not`, (t) => {
+      // A slug containing "resolved" is still an active session. Two of them,
+      // so a counting reader cannot pass by trading a leaked knowledge base
+      // (+1) for a hidden session (-1).
+      const slugs = ['auth-token-null', 'unresolved-promise-hang', 'unresolved-socket-close'];
+      const project = debugDirFixture(t, slugs);
+      assert.deepStrictEqual(readerOutput(command, project), expectedOutput(command, slugs), `\`${command}\``);
     });
 
-    test(`${relPath}: with every session resolved, nothing is listed`, (t) => {
+    test(`${where}: with every session resolved, none is counted`, (t) => {
       const project = debugDirFixture(t, []);
-      assert.deepStrictEqual(listedSessions(relPath, project), []);
+      assert.deepStrictEqual(readerOutput(command, project), expectedOutput(command, []), `\`${command}\``);
     });
   }
 });
