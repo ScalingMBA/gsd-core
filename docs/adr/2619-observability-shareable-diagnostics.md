@@ -127,6 +127,6 @@ This closes the second residual defect in Context #1. Both live `createHub()` se
 
 - **D1 is unchanged.** The gate is still opt-in. With `GSD_AUDIT` unset and the key absent or not exactly `true`, no logger is injected and the default dispatch output, including the `--json-errors` envelope, stays byte-for-byte identical. D1b is untouched.
 - **Precedence is the documented OR** (`0174:106`). Either source enables the trail; neither disables the other.
-- **The read has no side effects and never throws.** It reads `config.json` directly, using the scoped-then-root ladder `config-get` uses. It deliberately avoids `loadConfig`, which can rewrite the file, spawn git and print warnings on a path that must stay silent. An unreadable or malformed config falls back to the env-var-only behaviour.
+- **The read has no side effects and never throws.** It reads `config.json` directly, using the scoped-then-root ladder `config-get` uses. It deliberately avoids `loadConfig`, which can rewrite the file, spawn git and print warnings on a path that must stay silent. An unreadable or malformed config file sets nothing, and the ladder moves on. Under `GSD_WORKSTREAM` a broken workstream config inherits the root config's value; for that file `config-get` fails with `CONFIG_PARSE_FAILED` instead. Otherwise the env var alone decides.
 
 Still open from Context #1: the `GSD_AUDIT_ARGS` / `includeArgs` plumbing and the `docs/CONFIGURATION.md` stderr-on-error overstatement.

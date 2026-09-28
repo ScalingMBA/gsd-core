@@ -193,9 +193,10 @@ type AuditConfig = { audit: { enabled: boolean } };
  * dispatch, and loadConfig can rewrite config.json, spawn git, scan the
  * capability registry, and print warnings — none of which a dispatch that
  * never opted in may do (the default dispatch output is a stable contract,
- * ADR-2619). Never throws: any read or path failure resolves to "not
- * present", i.e. `enabled: false`, so the gate falls back to the GSD_AUDIT
- * env var alone.
+ * ADR-2619). Never throws. An unreadable or unparseable config file sets
+ * nothing, so the ladder moves on: under GSD_WORKSTREAM a broken workstream
+ * config inherits the root's `audit.enabled` (where config-get fails with
+ * CONFIG_PARSE_FAILED); otherwise the GSD_AUDIT env var alone decides.
  */
 function _readAuditConfig(cwd: string): AuditConfig {
   const { present, value } = readScopedConfigValue(cwd, ['audit', 'enabled']);

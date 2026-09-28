@@ -201,10 +201,15 @@ function ownConfigValue(configPath: string, keyPath: readonly string[]): ScopedC
  * workstream-aware); otherwise the flat root's key, but only under the
  * GSD_WORKSTREAM env gate — config-get deliberately does NOT inherit root
  * under GSD_PROJECT alone, and no reader of this ladder may diverge (#3963).
+ * An unreadable or unparseable file sets nothing, so the ladder moves on:
+ * under GSD_WORKSTREAM a broken workstream config inherits the root's key.
+ * That is the one place this read and config-get part ways — for a scoped
+ * config.json that exists but cannot be read or parsed, config-get fails
+ * with CONFIG_PARSE_FAILED instead of reporting a value.
  * The value is returned uncoerced; each caller applies its own strict
  * comparison. Never throws: planningDir/planningRoot reject a
  * GSD_PROJECT/GSD_WORKSTREAM value containing path separators or `..`, and
- * that shape — like any read failure — resolves to "not present".
+ * that shape resolves to "not present".
  */
 function readScopedConfigValue(cwd: string, keyPath: readonly [string, ...string[]]): ScopedConfigValue {
   try {
@@ -224,8 +229,8 @@ function readScopedConfigValue(cwd: string, keyPath: readonly [string, ...string
  * the effective `workflow.use_worktrees === false` read every
  * isolation-deciding surface must share (config-get's merged view is the
  * contract), resolved on the readScopedConfigValue ladder. Strict `=== false`
- * (never coerced); any read failure degrades to "not opted out" (worktrees
- * on — the fail-safe direction: the guard keeps enforcing).
+ * (never coerced); a config that cannot be read never opts out by itself
+ * (worktrees on — the fail-safe direction: the guard keeps enforcing).
  */
 function worktreesOptedOut(cwd: string): boolean {
   const { present, value } = readScopedConfigValue(cwd, ['workflow', 'use_worktrees']);
