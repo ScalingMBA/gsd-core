@@ -574,6 +574,44 @@ describe('release-tarball-smoke', () => {
 
     assert.deepEqual(configuredEntrypointsIn(text, configDir), [path.resolve(scriptPath)]);
   });
+
+  // ── L: configuredEntrypointsIn reads a backslash-spelled registration ─────
+  //
+  // #5084: the anchor is posix-normalized, so a registration spelled with
+  // Windows-native separators (a hand-edited settings.json, another tool's
+  // writer) must be scanned in that same projection or the dangling-hook
+  // check skips it. The Windows-shaped configDir is a literal rather than a
+  // path.join result so this fails on every host: this suite runs on Linux
+  // in CI, where path.join never emits a backslash and I/J/K cannot see it.
+  test('L: configuredEntrypointsIn resolves a backslash-spelled registration like its forward-slash spelling', () => {
+    // settings.json / hooks.json: JSON doubles every backslash on write.
+    const jsonRegistration = (scriptPath) => JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: `node "${scriptPath}"` }] },
+        ],
+      },
+    });
+
+    const configDir = 'C:\\Users\\Jane Doe\\.claude';
+    const nativeScript = `${configDir}\\hooks\\gsd-ghost-hook.js`;
+    const expected = [path.resolve(nativeScript.replace(/\\/g, '/'))];
+    assert.deepEqual(configuredEntrypointsIn(jsonRegistration(nativeScript), configDir), expected, 'JSON-escaped spelling');
+
+    // config.toml literal string: backslashes stay single.
+    const tomlText = `command = 'node ${nativeScript}'`;
+    assert.deepEqual(configuredEntrypointsIn(tomlText, configDir), expected, 'TOML literal spelling');
+
+    // A UNC home pins the order: JSON's `\\\\server` must collapse to
+    // `\\server` before the projection, giving the anchor's `//server`.
+    const uncConfigDir = '\\\\fileserver\\home\\Jane Doe\\.claude';
+    const uncScript = `${uncConfigDir}\\hooks\\gsd-ghost-hook.js`;
+    assert.deepEqual(
+      configuredEntrypointsIn(jsonRegistration(uncScript), uncConfigDir),
+      [path.resolve(uncScript.replace(/\\/g, '/'))],
+      'UNC JSON-escaped spelling',
+    );
+  });
 });
 
 

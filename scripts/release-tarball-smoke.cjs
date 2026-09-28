@@ -325,21 +325,26 @@ const RUNTIME_CONFIG_FILES = Object.freeze(['settings.json', 'hooks.json', 'conf
  * embeds a launch path without registering it, which a structured
  * JSON.parse of the expected schema would miss entirely.
  *
- * Windows configs store paths with backslashes, which JSON/TOML doubles on
- * write; collapsing `\\` to `\` first makes the raw text scan work on both
- * platforms without parsing each config format separately (POSIX text has no
- * backslashes, so the collapse is a no-op there).
- *
  * Every writer bakes `configDir` through the same posixNormalize seam
  * (src/runtime-hooks-surface.cts) before writing it into config text, on
  * every platform — so the anchor must match that projection, not the
  * OS-native `configDir` string this function receives.
+ *
+ * The scanned text goes through that same projection (#5084): a registration
+ * the installer did not write — a hand-edited settings.json, another tool's
+ * writer — may spell its path with Windows-native backslashes, and an anchor
+ * and haystack in different separator forms never match, so the dangling-hook
+ * check would skip it silently. JSON and TOML basic strings double every
+ * backslash on write, so `\\` collapses to `\` first; projecting per
+ * backslash afterwards keeps a UNC `\\server\share` as `//server/share`, the
+ * form posixNormalize gives the anchor.
  */
 function configuredEntrypointsIn(text, configDir) {
   const normalizedPrefix = shellCmdProjection.posixNormalize(configDir).replace(/\/+$/, '') + '/';
   const scriptPathRe = new RegExp(`${escapeRegex(normalizedPrefix)}[^"']{0,400}?\\.(?:js|cjs|mjs|sh|cmd|ps1)`, 'g');
+  const scannedText = shellCmdProjection.posixNormalize(text.replace(/\\\\/g, '\\'));
   const found = new Set();
-  for (const match of text.replace(/\\\\/g, '\\').matchAll(scriptPathRe)) {
+  for (const match of scannedText.matchAll(scriptPathRe)) {
     found.add(path.resolve(match[0]));
   }
   return [...found];
