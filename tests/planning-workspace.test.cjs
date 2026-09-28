@@ -782,6 +782,8 @@ describe('#2142: quick task workspace path (planningPaths().quick)', () => {
 // Both promise "the value config-get reports", so every ladder shape below is
 // resolved twice — in-process through the shared reader, and through the real
 // `config-get` CLI — and the two answers must agree, for both keys it serves.
+// The one documented exception, a scoped config.json that does not parse, is
+// pinned separately: config-get fails there, the reader moves down the ladder.
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('#4975: readScopedConfigValue agrees with config-get on every ladder shape', () => {
@@ -865,6 +867,18 @@ describe('#4975: readScopedConfigValue agrees with config-get on every ladder sh
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify(body));
   }
 
+  function writeUnparseableConfig(segments) {
+    const dir = path.join(tmpDir, '.planning', ...segments);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '{"audit":');
+  }
+
+  function assertConfigGetParseFailure(keyPath, env) {
+    const r = runGsdTools(['config-get', keyPath.join('.')], tmpDir, { ...env, GSD_JSON_ERRORS: '1' });
+    assert.equal(r.success, false, `config-get ${keyPath.join('.')} must fail on an unparseable scoped config`);
+    assert.equal(JSON.parse(r.error).reason, ERROR_REASON.CONFIG_PARSE_FAILED);
+  }
+
   /** What `config-get` reports for keyPath, in the reader's `{ present, value }` shape. */
   function configGet(keyPath, env) {
     const r = runGsdTools(['config-get', keyPath.join('.')], tmpDir, { ...env, GSD_JSON_ERRORS: '1' });
@@ -886,6 +900,23 @@ describe('#4975: readScopedConfigValue agrees with config-get on every ladder sh
         assert.deepStrictEqual(readScopedConfigValue(tmpDir, keyPath), expected);
       });
     }
+  }
+
+  for (const keyPath of KEY_PATHS) {
+    test(`unparseable root config, no workstream: config-get fails, the reader reports not present (${keyPath.join('.')})`, () => {
+      writeUnparseableConfig([]);
+      assertConfigGetParseFailure(keyPath, {});
+      assert.deepStrictEqual(readScopedConfigValue(tmpDir, keyPath), { present: false, value: undefined });
+    });
+
+    test(`unparseable workstream config: config-get fails, the reader inherits the root value (${keyPath.join('.')})`, () => {
+      writeConfig([], nest(keyPath, true));
+      writeUnparseableConfig(WORKSTREAM);
+      const env = { GSD_WORKSTREAM: 'alpha' };
+      assertConfigGetParseFailure(keyPath, env);
+      Object.assign(process.env, env);
+      assert.deepStrictEqual(readScopedConfigValue(tmpDir, keyPath), { present: true, value: true });
+    });
   }
 
   test('never throws: a traversal-shaped GSD_WORKSTREAM resolves to not present', () => {

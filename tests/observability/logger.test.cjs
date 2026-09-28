@@ -484,6 +484,15 @@ describe('resolveDispatchLogger — config audit.enabled opt-in gate (#4975)', (
     assert.equal(gateVerdict(), VERDICT.AUDIT_TRAIL);
   });
 
+  test('workstream scope: an unparseable workstream config sets nothing, so the root value is inherited', () => {
+    process.env.GSD_WORKSTREAM = 'alpha';
+    writeConfig(path.join('.planning', 'workstreams', 'alpha'), '{"audit":');
+    assert.equal(gateVerdict(), VERDICT.NO_LOGGER, 'broken workstream config and no root config: no logger');
+
+    writeConfig('.planning', JSON.stringify({ audit: { enabled: true } }));
+    assert.equal(gateVerdict(), VERDICT.AUDIT_TRAIL, 'broken workstream config: inherits the root true');
+  });
+
   test('hostile env: a traversal-shaped GSD_WORKSTREAM degrades to no logger instead of throwing', () => {
     writeConfig('.planning', JSON.stringify({ audit: { enabled: true } }));
     process.env.GSD_WORKSTREAM = '../escape';
