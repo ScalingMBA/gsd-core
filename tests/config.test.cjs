@@ -129,6 +129,17 @@ async function ensureConfigReady(tmpDir, attempts = 5) {
   );
 }
 
+/**
+ * Seed `.planning/config.json` with HOME and USERPROFILE (what `os.homedir()`
+ * reads on Windows) pointed at the project dir, so the seed never inherits the
+ * developer's `~/.gsd/defaults.json` (#5016). Every `beforeEach` seed whose
+ * tests assert values a global defaults file can override goes through here,
+ * so the #5016 regression case below guards all of them at once.
+ */
+function seedProjectConfig(dir) {
+  return runGsdTools('config-ensure-section', dir, { HOME: dir, USERPROFILE: dir });
+}
+
 // ─── config-ensure-section ───────────────────────────────────────────────────
 
 describe('config-ensure-section command', () => {
@@ -189,8 +200,7 @@ describe('config-set command', () => {
 
   beforeEach(() => {
     tmpDir = createTempProject();
-    // Create initial config — sandbox HOME to avoid global defaults (#5016)
-    runGsdTools('config-ensure-section', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
+    seedProjectConfig(tmpDir);
   });
 
   afterEach(() => {
@@ -337,11 +347,6 @@ describe('config-set command', () => {
 describe('config-set git.protected_branches (#3552)', () => {
   let tmpDir;
 
-  // Sandbox HOME so the seed does not inherit the developer's ~/.gsd/defaults.json (#5016)
-  function seedProjectConfig(dir) {
-    return runGsdTools('config-ensure-section', dir, { HOME: dir, USERPROFILE: dir });
-  }
-
   beforeEach(() => {
     tmpDir = createTempProject();
     seedProjectConfig(tmpDir);
@@ -445,7 +450,7 @@ describe('config-set git.protected_branches (#3552)', () => {
     assert.ok(seeded.success, `Seed failed: ${seeded.error}`);
     assert.ok(
       !Object.prototype.hasOwnProperty.call(readConfig(seededDir).git, 'protected_branches'),
-      'the block seed must not inherit protected_branches from the ambient defaults.json',
+      'seedProjectConfig must not inherit protected_branches from the ambient defaults.json',
     );
   });
 });
@@ -1234,8 +1239,7 @@ describe('config-set workflow.skip_discuss', () => {
 
   beforeEach(() => {
     tmpDir = createTempProject();
-    // Sandbox HOME to avoid global defaults (#5016)
-    runGsdTools('config-ensure-section', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
+    seedProjectConfig(tmpDir);
   });
 
   afterEach(() => {
