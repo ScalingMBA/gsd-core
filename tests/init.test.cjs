@@ -3843,11 +3843,15 @@ describe('init section manifest', () => {
    * by a shell — the process seam bypasses the shell entirely. Always runs
    * with GSD_JSON_ERRORS=1 so an error path yields a typed `{ ok, reason, message }`
    * envelope instead of prose, per CONTRIBUTING.md "Prohibited: Raw Text Matching".
+   * TEST_ENV_BASE goes under the caller's env, exactly as runGsdTools layers it:
+   * it blanks every GSD location var, so an ambient GSD_PROJECT / GSD_WORKSTREAM
+   * exported by the developer's shell can never redirect planningDir and change
+   * a scope-dependent fact; a case's own scope is applied after it.
    */
   function runSectionManifestCli(args, cwd, env = {}) {
     const seamResult = processSeam.runNode([TOOLS_PATH, 'query', ...args], {
       cwd,
-      env: { ...process.env, GSD_JSON_ERRORS: '1', ...env },
+      env: { ...process.env, ...TEST_ENV_BASE, GSD_JSON_ERRORS: '1', ...env },
       timeoutMs: GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS,
     });
     let stdout = seamResult.stdout || '';
@@ -4458,9 +4462,15 @@ describe('init section manifest', () => {
   // (absent ⇒ false) and excluded `worktree-pre-dispatch-commit` — the step
   // that commits PLAN.md so the isolated executor can read it at its worktree
   // HEAD. Every case drives the REAL `init.quick` against the SHIPPED manifest
-  // and pins both the expected verdict and its parity with `dispatch-isolation`
-  // on the same fixture: the pre-dispatch commit is included exactly when the
-  // executor would be dispatched isolated.
+  // and pins both the expected verdict and its parity with the
+  // `query dispatch-isolation` resolver verdict on the same fixture: the
+  // pre-dispatch commit is included exactly when that resolver reports
+  // `harness-worktree`. This is parity with the resolver, not with the
+  // workflow's final dispatch: the Step 2 shell gate
+  // (references/dispatch-isolation-gate.md) additionally forces `none`
+  // whenever `USE_WORKTREES` reads back as `false`, which a string "false"
+  // also does through `config-get --raw`, while the resolver alone still
+  // reports `harness-worktree` for it (the string-"false" row below).
 
   describe('init quick: state:worktrees-enabled follows the worktreesOptedOut ladder (#4977)', () => {
     const PRE_DISPATCH = 'worktree-pre-dispatch-commit';
@@ -4476,12 +4486,12 @@ describe('init section manifest', () => {
     }
 
     /**
-     * TEST_ENV_BASE blanks every GSD location var — GSD_PROJECT and GSD_WORKSTREAM
-     * included — so an ambient scope exported by the developer's shell can never
-     * redirect planningDir; a case's own `extra` scope is applied after it.
+     * runSectionManifestCli already layers TEST_ENV_BASE (no ambient scope);
+     * this adds a pinned runtime and a sandboxed home, then the case's own
+     * `extra` scope.
      */
     function hermeticEnv(dir, extra = {}) {
-      return { ...TEST_ENV_BASE, GSD_RUNTIME: 'claude', HOME: dir, USERPROFILE: dir, ...extra };
+      return { GSD_RUNTIME: 'claude', HOME: dir, USERPROFILE: dir, ...extra };
     }
 
     /** Which partition of the quick manifest holds the pre-dispatch step — exactly one of them must. */
@@ -4571,7 +4581,7 @@ describe('init section manifest', () => {
         assert.equal(
           dispatchIsolation(dir, env, `${c.name} (isolation)`),
           c.expected === 'included' ? 'harness-worktree' : 'none',
-          'the pre-dispatch commit must be selected exactly when the executor is dispatched isolated',
+          'the pre-dispatch commit must be selected in parity with the query dispatch-isolation resolver verdict',
         );
       });
     }
