@@ -647,6 +647,20 @@ function safeRealpath(p) {
   }
 }
 
+// Whether npm's effective cache dir is isolated from the caller's HOME: it
+// sits inside the sandbox HOME runNpm() injected, and that sandbox neither is
+// nor contains the caller's HOME. (#5083) A prefix check against the caller's
+// HOME cannot say this on Windows, where os.tmpdir() (%LOCALAPPDATA%\Temp) is
+// inside the user profile, so a correctly sandboxed cache still starts with
+// the HOME path. `pathApi` lets Test 5 run Windows-shaped paths on any host.
+function isIsolatedNpmCache({ cacheDir, sandboxHome, callerHome }, pathApi = path) {
+  const isWithin = (child, parent) => {
+    const rel = pathApi.relative(parent, child);
+    return rel === '' || (rel !== '..' && !rel.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(rel));
+  };
+  return isWithin(cacheDir, sandboxHome) && !isWithin(callerHome, sandboxHome);
+}
+
 describe('bug-131: runNpm isolates HOME from the caller environment', () => {
   // ── Test 1 — runNpm works with an unwritable HOME ────────────────────────
   // Spawn a child Node process that sets HOME to an unwritable directory, then
@@ -732,15 +746,17 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
   test('runNpm injects a HOME distinct from process.env.HOME', () => {
     // Capture what HOME runNpm actually passes to npm by asking npm to print
     // the value it sees for the $HOME env var. We do this via `npm config get
-    // cache` which reveals the cache path — if it's under process.env.HOME,
-    // the fix is absent; if it's under a tmp dir, the fix is present.
+    // cache` which reveals the cache path — if it's inside the sandbox HOME
+    // the child's helpers.cjs injected, the fix is present. The child reports
+    // that sandbox too: helpers.cjs creates a fresh one per process, so this
+    // process's isolatedNpmEnv() would name a different directory.
 
     const script = `
-      const { runNpm } = require(${JSON.stringify(path.join(__dirname, 'helpers.cjs'))});
+      const { runNpm, isolatedNpmEnv } = require(${JSON.stringify(path.join(__dirname, 'helpers.cjs'))});
       try {
         // npm config get cache prints the effective cache directory.
         const out = runNpm(['config', 'get', 'cache']);
-        process.stdout.write(out.trim());
+        process.stdout.write(JSON.stringify({ cacheDir: out.trim(), sandboxHome: isolatedNpmEnv().HOME }));
         process.exit(0);
       } catch (e) {
         process.stderr.write(e.message + '\\n');
@@ -768,14 +784,18 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
       `runNpm config get cache failed with exit ${exitCode}. stderr: ${stderr}`,
     );
 
-    const effectiveCacheDir = stdout.trim();
+    const { cacheDir: effectiveCacheDir, sandboxHome } = JSON.parse(stdout);
 
-    // The effective npm cache must NOT be inside the calling process's HOME.
-    // If it is, the fix was not applied and the Docker regression can still occur.
+    // The effective npm cache must be isolated from the calling process's HOME.
+    // If it is not, the fix was not applied and the Docker regression can still occur.
     const callerHome = os.homedir();
     assert.ok(
-      !effectiveCacheDir.startsWith(callerHome),
-      `npm cache dir ${effectiveCacheDir} is still under caller HOME ${callerHome} — fix not applied`,
+      isIsolatedNpmCache({
+        cacheDir: safeRealpath(effectiveCacheDir),
+        sandboxHome: safeRealpath(sandboxHome),
+        callerHome: safeRealpath(callerHome),
+      }),
+      `npm cache dir ${effectiveCacheDir} is not isolated in sandbox HOME ${sandboxHome} from caller HOME ${callerHome} — fix not applied`,
     );
 
     // It must be somewhere under the system tmp dir, confirming isolation.
@@ -910,6 +930,58 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
         `captured options.timeout was ${JSON.stringify(captured.timeout)} — an unset bound ` +
         `is not a bound (DEFECT.UNBOUNDED-SUBPROCESS)`,
     );
+  });
+
+  // ── Test 5 — Test 2's isolation check holds where tmpdir sits inside HOME ──
+  // (#5083) On Windows os.tmpdir() is %LOCALAPPDATA%\Temp, inside the user
+  // profile, so a correctly sandboxed cache still starts with the caller's
+  // HOME path. This suite runs on Linux in CI, so the Windows-shaped cases go
+  // through path.win32 to hold on every host.
+  test('the npm cache isolation check accepts a sandbox inside HOME and rejects one that is or contains HOME', () => {
+    const winHome = 'C:\\Users\\dev';
+    const winSandbox = `${winHome}\\AppData\\Local\\Temp\\npm-home-AbC123`;
+    const posixSandbox = '/tmp/npm-home-AbC123';
+    const cases = [
+      {
+        label: 'Windows sandbox under %LOCALAPPDATA%\\Temp',
+        pathApi: path.win32,
+        paths: { cacheDir: `${winSandbox}\\.npm`, sandboxHome: winSandbox, callerHome: winHome },
+        isolated: true,
+      },
+      {
+        label: 'Windows npm default cache, outside the sandbox',
+        pathApi: path.win32,
+        paths: { cacheDir: `${winHome}\\AppData\\Local\\npm-cache`, sandboxHome: winSandbox, callerHome: winHome },
+        isolated: false,
+      },
+      {
+        label: 'Windows sandbox that is the caller HOME',
+        pathApi: path.win32,
+        paths: { cacheDir: `${winHome}\\.npm`, sandboxHome: winHome, callerHome: winHome },
+        isolated: false,
+      },
+      {
+        label: 'POSIX sandbox under /tmp',
+        pathApi: path.posix,
+        paths: { cacheDir: `${posixSandbox}/.npm`, sandboxHome: posixSandbox, callerHome: '/home/dev' },
+        isolated: true,
+      },
+      {
+        label: 'POSIX npm default cache, outside the sandbox',
+        pathApi: path.posix,
+        paths: { cacheDir: '/home/dev/.npm', sandboxHome: posixSandbox, callerHome: '/home/dev' },
+        isolated: false,
+      },
+      {
+        label: 'POSIX sandbox that contains the caller HOME',
+        pathApi: path.posix,
+        paths: { cacheDir: '/home/dev/.npm', sandboxHome: '/home', callerHome: '/home/dev' },
+        isolated: false,
+      },
+    ];
+    for (const { label, pathApi, paths, isolated } of cases) {
+      assert.equal(isIsolatedNpmCache(paths, pathApi), isolated, label);
+    }
   });
 });
   });
