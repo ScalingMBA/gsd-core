@@ -6,8 +6,8 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { spawnSync } = require('node:child_process');
-const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter, captureFdSync } = require('./helpers.cjs');
+const processSeam = require('./helpers/process-seam.cjs');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH, parseFrontmatter, captureFdSync, homeSandboxEnv } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
@@ -35,9 +35,9 @@ describe('init commands', () => {
   beforeEach(() => {
     // #2376 macOS fix: realpath the fixture root so absolute path-field
     // assertions (absPlanningPath comparisons below) match the code's
-    // process.cwd()-anchored output — macOS's tmpdir is a symlink
+    // process.cwd()-anchored output — macOS's tmpdir resolves through a link
     // (/var/... -> /private/var/...) that a spawned child resolves via
-    // realpath but `createFixture()` does not. No-op on Linux (no symlink).
+    // realpath but `createFixture()` does not. No-op on Linux (no such link).
     tmpDir = fs.realpathSync(createFixture());
   });
 
@@ -1346,6 +1346,67 @@ describe('init plan-phase zero-padded phase number (bug #2391)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// init plan-phase — Phase Status Module consumers (#5060)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('init plan-phase — Phase Status Module consumers (#5060)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.realpathSync(createFixture());
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('a stale-passed phase 1 reports phase_status Executed, not Complete', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Foo\n**Goal**: do the thing\n'
+    );
+    seedPhase(tmpDir, '01-foo', {
+      '01-01-PLAN.md': '# Plan',
+      '01-01-SUMMARY.md': '# Summary',
+      // Written last: covered_digest never matches, so the report is stale
+      // despite `status: passed`.
+      '01-VERIFICATION.md': [
+        '---',
+        'status: passed',
+        'covered_files:',
+        '  - 01-01-PLAN.md',
+        'covered_digest: sha256-v2:0000000000000000',
+        '---',
+        '# Verification',
+        '',
+      ].join('\n'),
+    });
+
+    const result = runGsdTools('init plan-phase 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_status, 'Executed', 'a stale-passed verification must not report Complete');
+  });
+
+  test('a zero-plan phase with a fresh passed report reports phase_status Complete', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1: Foo\n**Goal**: do the thing\n'
+    );
+    seedPhase(tmpDir, '01-foo', {
+      '01-VERIFICATION.md': '---\nstatus: passed\n---\n# Verification',
+    });
+
+    const result = runGsdTools('init plan-phase 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_status, 'Complete', 'a zero-plan phase with a fresh passed report is disk-strict Complete');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // cmdInitTodos (INIT-01)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1543,6 +1604,10 @@ describe('cmdInitMilestoneOp', () => {
     fs.mkdirSync(phase2, { recursive: true });
     fs.writeFileSync(path.join(phase1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(phase1, '01-01-SUMMARY.md'), '# Summary');
+    // #5060: a completed phase is now the ladder's own PHASE_STATUS.COMPLETE
+    // (isPhaseComplete's disk-strict verdict), not "has any *-SUMMARY.md" — a
+    // passing verification is required for phase1 to still count here.
+    fs.writeFileSync(path.join(phase1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
     fs.writeFileSync(path.join(phase2, '02-01-PLAN.md'), '# Plan');
 
     const result = runGsdTools('init milestone-op', tmpDir);
@@ -1559,6 +1624,9 @@ describe('cmdInitMilestoneOp', () => {
     fs.mkdirSync(phase1, { recursive: true });
     fs.writeFileSync(path.join(phase1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(phase1, '01-01-SUMMARY.md'), '# Summary');
+    // #5060: see "mix of complete and incomplete phases" above — a passing
+    // verification is required for the ladder to report COMPLETE.
+    fs.writeFileSync(path.join(phase1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
 
     const result = runGsdTools('init milestone-op', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -1569,10 +1637,33 @@ describe('cmdInitMilestoneOp', () => {
     assert.strictEqual(output.all_phases_complete, true);
   });
 
+  // #5060 review finding: cmdInitMilestoneOp used to count a phase as
+  // completed when its directory had ANY `*-SUMMARY.md` — a counts-only
+  // verdict that bypasses isPhaseComplete. A phase with 2 plans and only 1
+  // matched summary (and no verification at all) must not count as complete.
+  test('#5060: a phase with unsummarized plans and no verification does not count as completed', () => {
+    const phase1 = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    fs.mkdirSync(phase1, { recursive: true });
+    fs.writeFileSync(path.join(phase1, '01-01-PLAN.md'), '# Plan 1');
+    fs.writeFileSync(path.join(phase1, '01-02-PLAN.md'), '# Plan 2');
+    fs.writeFileSync(path.join(phase1, '01-01-SUMMARY.md'), '# Summary 1');
+
+    const result = runGsdTools('init milestone-op', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.phase_count, 1);
+    assert.strictEqual(output.completed_phases, 0);
+    assert.strictEqual(output.all_phases_complete, false);
+  });
+
   test('project_code-prefixed phase directories count as completed milestone phases (#1836)', () => {
+    // #5060: a passing verification is required for the ladder to report
+    // COMPLETE (see "mix of complete and incomplete phases" above).
     seedPhase(tmpDir, 'PROJ-01-setup', {
       'PROJ-01-01-PLAN.md': '# Plan',
       'PROJ-01-01-SUMMARY.md': '# Summary',
+      '01-VERIFICATION.md': '---\nstatus: passed\n---\n# Verification\n',
     });
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1616,6 +1707,9 @@ describe('cmdInitMilestoneOp', () => {
     fs.mkdirSync(phase1, { recursive: true });
     fs.writeFileSync(path.join(phase1, '01-01-PLAN.md'), '# Plan');
     fs.writeFileSync(path.join(phase1, '01-01-SUMMARY.md'), '# Summary');
+    // #5060: a passing verification is required for the ladder to report
+    // COMPLETE (see "mix of complete and incomplete phases" above).
+    fs.writeFileSync(path.join(phase1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n# Verification\n');
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'STATE.md'),
       [
@@ -2014,7 +2108,7 @@ describe('cmdInitQuick', () => {
   test('init quick resolves the default researcher_model without overrides', () => {
     // #3936: the quick research step dispatches gsd-phase-researcher, so init
     // quick must resolve that agent's balanced-profile model without an override.
-    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, { HOME: tmpDir, USERPROFILE: tmpDir });
+    const result = runGsdTools('init quick "Fix login bug" --raw', tmpDir, homeSandboxEnv(tmpDir));
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
@@ -3424,7 +3518,7 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
 // reach — so these drive the exported functions directly, in-process,
 // mirroring the cmdInitVerifyWork capture pattern immediately above.
 // Injected via `t.mock.method(fs, 'readdirSync', ...)` (auto-restored) —
-// NEVER chmod 0o000, which root bypasses with zero coverage.
+// never a zero-permission mode bit, which root bypasses with zero coverage.
 describe('#3885 (ADR-3473 §8.5): init callers distinguish unreadable from absent phase directories', () => {
   const initMod = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'init.cjs'));
   let projectDir;
@@ -3730,7 +3824,7 @@ test('bug-3491: new-project.md gates `git init` on in_nested_subdir, not just ha
 // init CLI negative matrix for `section_manifest`. Covers
 // `.gsd/phase/chore-2932-init-section-manifest/50-test-matrix.md` section E
 // (rows 42-59) plus row 62. Drives the REAL CLI through the dispatch seam
-// (`spawnSync(process.execPath, [...])` with argv ARRAYS — never shell strings) so
+// (argv-array spawn via the process seam — never a shell string) so
 // hostile inputs (rows 55/56) prove no shell interpolation and no path escape.
 //
 // Each test asserts: exit status, structured JSON result, absence of project-tree
@@ -3746,24 +3840,28 @@ describe('init section manifest', () => {
   /**
    * Invokes the real CLI dispatch seam with an argv ARRAY (never a shell string),
    * so shell metacharacters in an argument (rows 55/56) can never be interpreted
-   * by a shell — spawnSync with an array bypasses the shell entirely. Always runs
+   * by a shell — the process seam bypasses the shell entirely. Always runs
    * with GSD_JSON_ERRORS=1 so an error path yields a typed `{ ok, reason, message }`
    * envelope instead of prose, per CONTRIBUTING.md "Prohibited: Raw Text Matching".
    */
   function runSectionManifestCli(args, cwd, env = {}) {
-    const result = spawnSync(process.execPath, [TOOLS_PATH, 'query', ...args], {
+    const seamResult = processSeam.runNode([TOOLS_PATH, 'query', ...args], {
       cwd,
-      encoding: 'utf8',
       env: { ...process.env, GSD_JSON_ERRORS: '1', ...env },
-      timeout: GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS,
+      timeoutMs: GSD_TOOLS_CLI_MODERATE_TIMEOUT_MS,
     });
-    let stdout = result.stdout || '';
+    let stdout = seamResult.stdout || '';
     // output() spills payloads over 50KB to a tmpfile and prints "@file:<path>"
     // (src/io.cts) — dereference it exactly as the workflow itself does.
     if (stdout.startsWith('@file:')) {
       stdout = fs.readFileSync(stdout.slice('@file:'.length).trim(), 'utf8');
     }
-    return { status: result.status, stdout, stderr: result.stderr || '' };
+    // Adapter over the seam's typed { outcome, exitCode, ... } result — preserves
+    // this helper's pre-existing { status, stdout, stderr } contract for callers
+    // that read `.status` (parseOkJson/parseErrorJson above use `equal`/`notEqual`
+    // against a numeric status, matching spawnSync's `result.status` shape, which
+    // is `null` on a kill/timeout exactly like `seamResult.exitCode` is).
+    return { status: seamResult.exitCode, stdout, stderr: seamResult.stderr || '' };
   }
 
   function runExecutePhase(phaseArgs, cwd, env = {}) {
@@ -5034,6 +5132,130 @@ describe('#3581: init.progress next_phase prefers the roadmap frontier', () => {
     assert.ok(result.success, `init progress failed: ${result.error}`);
     const out = JSON.parse(result.output);
     assert.equal(out.next_phase, null, 'all-complete milestone: no frontier (completion flow owns the answer)');
+  });
+});
+
+// ─── #4982: cmdInitProgress's `cbPattern` checkbox->phase scan must be
+// line-anchored (no greedy `.*` binding to the LAST "Phase N" mentioned in a
+// checklist line's prose) and must resolve each phase from its own FIRST
+// anchored line, not the last one seen by the global scan (last-match-wins).
+describe('#4982: init.progress ROADMAP checkbox projection anchoring', () => {
+  test('#4982: a checklist line whose prose mentions a later phase does not bind its checkbox to that phase (greedy binding)', (t) => {
+    const tmpDir = createTempProject('gsd-4982-greedy-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap',
+      '',
+      '## Milestone v1.1.0',
+      '',
+      '- [x] **Phase 1: Foundation** — extends the Phase 2 store',
+      '- [ ] **Phase 2: Hardening**',
+      '  - [x] 1-03-PLAN — scaffolding for Phase 2 hardening',
+      '',
+      '### Phase 1: Foundation',
+      '**Goal:** foundation',
+      '',
+      '### Phase 2: Hardening',
+      '**Goal:** hardening',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---', 'gsd_state_version: 1.0', 'milestone: v1.1.0', 'milestone_name: Active',
+      'status: executing', 'current_phase: 1', 'progress:', '  total_phases: 2',
+      '  completed_phases: 1', '  percent: 50', '---', '', '# Project State', '',
+      '## Current Position', '', 'Phase: 1', 'Status: Executing', '',
+    ].join('\n'));
+
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDir);
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    const one = out.phases.find((p) => String(p.number).replace(/^0+/, '') === '1');
+    const two = out.phases.find((p) => String(p.number).replace(/^0+/, '') === '2');
+    assert.ok(one, 'Phase 1 present');
+    assert.ok(two, 'Phase 2 present');
+    assert.strictEqual(one.roadmap_complete, true,
+      "Phase 1's own [x] must be attributed to Phase 1, not the 'Phase 2' mentioned in its prose");
+    assert.strictEqual(two.roadmap_complete, false,
+      "Phase 2's own [ ] must not be overwritten by a later line's incidental 'Phase 2' mention");
+    assert.ok(out.next_phase, 'next_phase present');
+    assert.strictEqual(String(out.next_phase.number).replace(/^0+/, ''), '2',
+      'Phase 2 (the real incomplete phase) is the frontier, not Phase 1');
+  });
+
+  test('#4982: a self-titled nested sub-entry line must not overwrite its parent phase\'s own (first) checkbox — anchoring alone is not enough', (t) => {
+    const tmpDir = createTempProject('gsd-4982-lastwins-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap',
+      '',
+      '## Milestone v1.1.0',
+      '',
+      '- [x] **Phase 3: Foo**',
+      '- [ ] **Phase 4: Bar**',
+      '  - [ ] Phase 3 regression sweep (extra verification pass)',
+      '',
+      '### Phase 3: Foo',
+      '**Goal:** foo',
+      '',
+      '### Phase 4: Bar',
+      '**Goal:** bar',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---', 'gsd_state_version: 1.0', 'milestone: v1.1.0', 'milestone_name: Active',
+      'status: executing', 'current_phase: 3', 'progress:', '  total_phases: 2',
+      '  completed_phases: 1', '  percent: 50', '---', '', '# Project State', '',
+      '## Current Position', '', 'Phase: 3', 'Status: Executing', '',
+    ].join('\n'));
+
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDir);
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    const three = out.phases.find((p) => String(p.number).replace(/^0+/, '') === '3');
+    assert.ok(three, 'Phase 3 present');
+    assert.strictEqual(three.roadmap_complete, true,
+      "Phase 3's own anchored [x] line must win even though a later anchored line ('Phase 3 regression sweep') also mentions Phase 3 — first anchored match wins, not last");
+  });
+
+  // #4982 review finding: the anchor fix above must not regress a checklist
+  // line that combines a bracket tag with the literal "Phase N" wording (the
+  // old unanchored `.*` absorbed the bracket text and still matched); this
+  // site stays deliberately non-bracket-convention-aware otherwise (#4984).
+  test('#4982 (review fold-in): a bracket-tagged checklist line combined with literal "Phase N" wording still resolves its own checkbox', (t) => {
+    const tmpDir = createTempProject('gsd-4982-brackethybrid-');
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Roadmap',
+      '',
+      '## Milestone v1.1.0',
+      '',
+      '- [x] **[GSD.02] Phase 3: Foo**',
+      '- [ ] **[GSD.02] Phase 4: Bar**',
+      '',
+      '### Phase 3: Foo',
+      '**Goal:** foo',
+      '',
+      '### Phase 4: Bar',
+      '**Goal:** bar',
+      '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), [
+      '---', 'gsd_state_version: 1.0', 'milestone: v1.1.0', 'milestone_name: Active',
+      'status: executing', 'current_phase: 3', 'progress:', '  total_phases: 2',
+      '  completed_phases: 1', '  percent: 50', '---', '', '# Project State', '',
+      '## Current Position', '', 'Phase: 3', 'Status: Executing', '',
+    ].join('\n'));
+
+    const result = runGsdTools(['init', 'progress', '--raw'], tmpDir);
+    assert.ok(result.success, `init progress failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    const three = out.phases.find((p) => String(p.number).replace(/^0+/, '') === '3');
+    const four = out.phases.find((p) => String(p.number).replace(/^0+/, '') === '4');
+    assert.ok(three, 'Phase 3 present');
+    assert.ok(four, 'Phase 4 present');
+    assert.strictEqual(three.roadmap_complete, true,
+      'a bracket tag before the literal "Phase N" wording must not prevent the anchor from matching');
+    assert.strictEqual(four.roadmap_complete, false);
   });
 });
 
