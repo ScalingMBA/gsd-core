@@ -613,6 +613,30 @@ describe('#1974 context exhaustion auto-record', () => {
   // by the runHook() helper throughout this test file — it calls the hook from an arbitrary
   // tmpDir and all tests pass, proving __dirname-relative resolution works.
 });
+
+describe('#4905: the CRITICAL breadcrumb stamps the local day through the clock seam', () => {
+  const { runNode } = require('./helpers/process-seam.cjs');
+
+  // The breadcrumb the hook would record, computed in a child whose clock and
+  // time zone are pinned. Each pin puts the local and UTC calendar days on
+  // different dates, so only the clock seam's local day passes.
+  function breadcrumbAt(nowMs, tz) {
+    const result = runNode(
+      ['-e', `process.stdout.write(require(${JSON.stringify(HOOK_PATH)}).criticalStoppedAt(80))`],
+      { env: { ...process.env, GSD_TEST_MODE: '1', GSD_NOW_MS: String(nowMs), TZ: tz } },
+    );
+    assert.strictEqual(result.exitCode, 0, result.stderr);
+    return result.stdout;
+  }
+
+  test('ahead of UTC (the #4905 repro): 2026-06-30T22:30Z is already 1 July in Copenhagen', () => {
+    assert.strictEqual(breadcrumbAt(1782858600000, 'Europe/Copenhagen'), 'context exhaustion at 80% (2026-07-01)');
+  });
+
+  test('behind UTC: 2020-06-15T02:00Z is still 14 June in Chicago', () => {
+    assert.strictEqual(breadcrumbAt(1592186400000, 'America/Chicago'), 'context exhaustion at 80% (2020-06-14)');
+  });
+});
   });
 }
 
