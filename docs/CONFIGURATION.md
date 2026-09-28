@@ -154,7 +154,7 @@ replaced your entire configuration with built-in defaults, and nothing said so (
 
 The warning is printed once per file per run, so a repeated command will not spam it.
 
-The same applies to the global `~/.gsd/defaults.json`. If the project config is also unusable, the
+The same applies to the global `$GSD_HOME/.gsd/defaults.json`. If the project config is also unusable, the
 project one is reported, since that is the file you are most likely able to fix.
 
 **If you see this warning:** your config was not applied. Validate the file, for example with
@@ -1583,7 +1583,9 @@ Valid override values: `opus`, `sonnet`, `haiku`, `fable`, `inherit`, or any ful
 On the Claude runtime, fully-qualified Claude model IDs are honored as explicit generation pins (#4192): an ID that names the current tier default (e.g. `"claude-sonnet-5"`) collapses to its tier alias — the same model in the form Claude Code's Agent tool always accepts — while any other ID (e.g. `"claude-opus-4-7"`) is resolved verbatim, so the pinned generation is what `resolve-model` reports. GSD emits a warn-once stderr breadcrumb for verbatim pins, because Claude Code setups whose Agent tool accepts only tier aliases will not honor a full ID. `fable` is a Claude Code Agent-tool alias, not a GSD profile tier: it is valid in `model_overrides` but has no column in the profile table.
 
 `model_overrides` can be set in either `.planning/config.json` (per-project)
-or `~/.gsd/defaults.json` (global). Per-project entries win on conflict and
+or `$GSD_HOME/.gsd/defaults.json` (global). The install-time embedding for
+Codex and OpenCode described below still reads `~/.gsd/defaults.json`
+([#5017](https://github.com/open-gsd/gsd-core/issues/5017)). Per-project entries win on conflict and
 non-conflicting global entries are preserved, so you can tune a single
 agent's model in one repo without re-setting global defaults. This applies
 uniformly across Claude Code, Codex, OpenCode, Kilo, and the other
