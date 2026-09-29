@@ -1845,9 +1845,10 @@ describe('#3911: the --check guards for the new hooks/lib artifacts can actually
   const GEN_HOOKS_CLI_EXIT = path.join(REPO_ROOT, 'scripts', 'gen-hooks-cli-exit.cjs');
   const GEN_EXIT_CODE_REGISTRY = path.join(REPO_ROOT, 'scripts', 'gen-exit-code-registry.cjs');
   const registryGenerator = require(GEN_EXIT_CODE_REGISTRY);
-  // gen-hooks-cli-exit.cjs --check runs a real tsc compile of the whole
-  // project to a throwaway outDir (see its own COMPILE_TIMEOUT_MS=60000) —
-  // this needs a longer bound than a plain probe.
+  // gen-hooks-cli-exit.cjs --check runs a real tsc compile, scoped to
+  // src/cli-exit.cts and its own import closure, to a throwaway outDir (see
+  // gen-scripts-cli-exit.cjs's shared compileToTemp(), COMPILE_TIMEOUT_MS=60000)
+  // — this needs a longer bound than a plain probe.
   const CHECK_TIMEOUT_MS = 90000;
 
   test('gen-hooks-cli-exit.cjs --check fails on a corrupted TMPDIR copy of hooks/lib/cli-exit.js, names the file, and clears on restore', (t) => {
@@ -1924,6 +1925,57 @@ describe('#3911: the --check guards for the new hooks/lib artifacts can actually
     // The property this whole test exists to prove: the committed file was
     // never touched, at any point, by any of the above.
     assert.deepEqual(fs.readFileSync(HOOKS_EXIT_CODE_REGISTRY_PATH), original, 'committed hooks/lib/exit-code-registry.js must be untouched');
+  });
+});
+
+// #5068: the cli-exit generators' compile must stay scoped to
+// src/cli-exit.cts's import closure. A whole-project compile to read back one
+// file ran past COMPILE_TIMEOUT_MS on a contended bench and turned the --check
+// rows above into fail_build_failed (fixed by #5060's shared compileToTemp).
+// These rows pin that scope, so a regression to a whole-project compile fails
+// here by construction instead of intermittently under load.
+describe('#5068: the cli-exit generators compile only src/cli-exit.cts and its import closure', () => {
+  const REPO_ROOT = path.resolve(__dirname, '..');
+  const GEN_SCRIPTS_PATH = path.join(REPO_ROOT, 'scripts', 'gen-scripts-cli-exit.cjs');
+  const GEN_HOOKS_PATH = path.join(REPO_ROOT, 'scripts', 'gen-hooks-cli-exit.cjs');
+
+  test('compileToTemp emits cli-exit.cjs and nothing else — its program is cli-exit.cts\'s import closure, not the project', (t) => {
+    const { compileToTemp } = require(GEN_SCRIPTS_PATH);
+    const build = compileToTemp();
+    if (build.ok) t.after(() => cleanup(build.dir));
+    assert.equal(build.ok, true, `the scoped compile failed: ${build.detail}`);
+    // Its one import, exit-code-registry, is a .d.cts declaration and emits
+    // nothing; a whole-project compile would emit every src/*.cts module.
+    assert.deepEqual(fs.readdirSync(build.dir), ['cli-exit.cjs']);
+  });
+
+  test('gen-hooks-cli-exit builds through the same compileToTemp gen-scripts-cli-exit exports', (t) => {
+    const Module = require('node:module');
+    const scriptsKey = require.resolve(GEN_SCRIPTS_PATH);
+    const hooksKey = require.resolve(GEN_HOOKS_PATH);
+    const saved = { scripts: require.cache[scriptsKey], hooks: require.cache[hooksKey] };
+    t.after(() => {
+      for (const [key, entry] of [[scriptsKey, saved.scripts], [hooksKey, saved.hooks]]) {
+        if (entry) require.cache[key] = entry;
+        else delete require.cache[key];
+      }
+    });
+
+    // A stand-in emit carrying the one import the hooks generator rewrites.
+    const stubDir = createTempDir('gsd-5068-compile-stub-');
+    t.after(() => cleanup(stubDir));
+    fs.writeFileSync(path.join(stubDir, 'cli-exit.cjs'), 'const r = require("./exit-code-registry.cjs");\n');
+    let calls = 0;
+    const stub = new Module(scriptsKey);
+    stub.filename = scriptsKey;
+    stub.loaded = true;
+    stub.exports = { compileToTemp: () => { calls += 1; return { ok: true, dir: stubDir }; } };
+    require.cache[scriptsKey] = stub;
+    delete require.cache[hooksKey];
+
+    const result = require(GEN_HOOKS_PATH).buildExpectedContent();
+    assert.equal(calls, 1, 'gen-hooks-cli-exit must compile through gen-scripts-cli-exit\'s compileToTemp, not a copy of its own');
+    assert.equal(result.ok, true, `buildExpectedContent failed on the stubbed compile: ${result.reason}`);
   });
 });
 
