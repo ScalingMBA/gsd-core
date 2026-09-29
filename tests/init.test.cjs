@@ -4491,7 +4491,7 @@ describe('init section manifest', () => {
      * `extra` scope.
      */
     function hermeticEnv(dir, extra = {}) {
-      return { GSD_RUNTIME: 'claude', HOME: dir, USERPROFILE: dir, ...extra };
+      return { GSD_RUNTIME: 'claude', ...homeSandboxEnv(dir), ...extra };
     }
 
     /** Which partition of the quick manifest holds the pre-dispatch step — exactly one of them must. */
