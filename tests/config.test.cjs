@@ -130,14 +130,14 @@ async function ensureConfigReady(tmpDir, attempts = 5) {
 }
 
 /**
- * Seed `.planning/config.json` with HOME and USERPROFILE (what `os.homedir()`
- * reads on Windows) pointed at the project dir, so the seed never inherits the
+ * Seed `.planning/config.json` with both OS home variables pointed at the
+ * project dir through homeSandboxEnv, so the seed never inherits the
  * developer's `~/.gsd/defaults.json` (#5016). Every `beforeEach` seed whose
  * tests assert values a global defaults file can override goes through here,
  * so the #5016 regression case below guards all of them at once.
  */
 function seedProjectConfig(dir) {
-  return runGsdTools('config-ensure-section', dir, { HOME: dir, USERPROFILE: dir });
+  return runGsdTools('config-ensure-section', dir, homeSandboxEnv(dir));
 }
 
 // ─── config-ensure-section ───────────────────────────────────────────────────
@@ -438,8 +438,7 @@ describe('config-set git.protected_branches (#3552)', () => {
     t.after(() => { cleanup(controlDir); cleanup(seededDir); });
 
     const [control, seeded] = withIsolatedProcessState(() => {
-      process.env.HOME = ambientHome;
-      process.env.USERPROFILE = ambientHome;
+      Object.assign(process.env, homeSandboxEnv(ambientHome));
       return [runGsdTools('config-ensure-section', controlDir), seedProjectConfig(seededDir)];
     });
 
