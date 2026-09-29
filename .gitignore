@@ -186,6 +186,7 @@ build/
 /gsd-core/bin/lib/shell-command-projection.cjs
 /gsd-core/bin/lib/security.cjs
 /gsd-core/bin/lib/verification.cjs
+/gsd-core/bin/lib/phase-status.cjs
 /gsd-core/bin/lib/verification-command-router.cjs
 /gsd-core/bin/lib/command-aliases.cjs
 /gsd-core/bin/lib/config-schema.cjs
@@ -281,6 +282,8 @@ build/
 /gsd-core/bin/lib/check-command-router.cjs
 /gsd-core/bin/lib/verify-command-grounding.cjs
 /gsd-core/bin/lib/frontmatter.cjs
+/gsd-core/bin/lib/frontmatter-fence.cjs
+/gsd-core/bin/lib/frontmatter-splice.cjs
 /gsd-core/bin/lib/learnings.cjs
 /gsd-core/bin/lib/gsd2-import.cjs
 /gsd-core/bin/lib/profile-pipeline.cjs
