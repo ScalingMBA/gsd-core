@@ -1086,7 +1086,7 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
       {
         label: "Windows caller HOME equality ignores path casing",
         pathApi: path.win32,
-        paths: {"cacheDir":"C:\\Users\\dev\\.npm","sandboxHome":"c:\\users\\dev","callerHome":"C:\\USERS\\DEV"},
+        paths: {"cacheDir":"c:\\users\\dev\\.npm","sandboxHome":"c:\\users\\dev","callerHome":"C:\\USERS\\DEV"},
         isolated: false,
       },
     ];
