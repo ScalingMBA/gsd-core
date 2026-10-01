@@ -1480,7 +1480,7 @@ describe('bug #3683 — workflow/reference colon-namespace leak (Claude local in
 // → add, --insert → insert). The retiredPattern guard above is built from the
 // LIVE command names, so a removed name can never match it, and it sees only
 // the hyphen spelling. This guard walks every shipped prose surface with no
-// hand-kept file list and rejects all three spellings of both names.
+// hand-kept file list and rejects all three spellings of the absorbed commands.
 {
   const { describe, test } = require('node:test');
   const assert = require('node:assert/strict');
@@ -1489,7 +1489,7 @@ describe('bug #3683 — workflow/reference colon-namespace leak (Claude local in
 
   const ROOT = path.join(__dirname, '..');
   const SHIPPED_DIRS = ['agents', 'commands/gsd', 'skills', 'gsd-core/workflows', 'gsd-core/references', 'gsd-core/templates'];
-  const ABSORBED_PHASE_COMMAND = /\/gsd[-: ](?:add-phase|insert-phase)(?![A-Za-z0-9_-])/;
+  const ABSORBED_COMMAND = /\/gsd[-: ](?:add-phase|insert-phase|add-backlog)(?![A-Za-z0-9_-])/;
 
   function walk(dir, out = []) {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -1503,31 +1503,31 @@ describe('bug #3683 — workflow/reference colon-namespace leak (Claude local in
   const shippedFiles = SHIPPED_DIRS.flatMap((dir) => walk(path.join(ROOT, dir)));
   const relative = (file) => path.relative(ROOT, file).split(path.sep).join('/');
 
-  describe('#5002: no shipped file points at the absorbed add-phase / insert-phase commands', () => {
+  describe('#5002: no shipped file points at the absorbed phase or backlog commands', () => {
     test('the walk reaches the files that carried the dead references', () => {
       const walked = new Set(shippedFiles.map(relative));
-      for (const known of ['gsd-core/workflows/mvp-phase.md', 'gsd-core/workflows/explore.md', 'skills/gsd-mvp-phase/SKILL.md']) {
+      for (const known of ['gsd-core/workflows/mvp-phase.md', 'gsd-core/workflows/explore.md', 'skills/gsd-mvp-phase/SKILL.md', 'gsd-core/templates/README.md']) {
         assert.ok(walked.has(known), `the walk must include ${known}`);
       }
     });
 
     test('the pattern matches every spelling and ignores workflow path tokens', () => {
-      for (const spelling of ['/gsd-add-phase x', '/gsd:add-phase x', '/gsd add-phase x', '/gsd-insert-phase 3', '/gsd:insert-phase', '/gsd insert-phase']) {
-        assert.match(spelling, ABSORBED_PHASE_COMMAND);
+      for (const spelling of ['/gsd-add-phase x', '/gsd:add-phase x', '/gsd add-phase x', '/gsd-insert-phase 3', '/gsd:insert-phase', '/gsd insert-phase', '/gsd-add-backlog idea', '/gsd:add-backlog idea', '/gsd add-backlog idea']) {
+        assert.match(spelling, ABSORBED_COMMAND);
       }
-      for (const legitimate of ['@~/.claude/gsd-core/workflows/add-phase.md', 'workflows/insert-phase.md', '/gsd:phase --insert 7 "Fix auth"', '/gsd-add-phases']) {
-        assert.doesNotMatch(legitimate, ABSORBED_PHASE_COMMAND);
+      for (const legitimate of ['@~/.claude/gsd-core/workflows/add-phase.md', 'workflows/insert-phase.md', '/gsd:phase --insert 7 "Fix auth"', '/gsd-add-phases', '/gsd-add-backlogs', 'workflows/add-backlog.md', '/gsd:capture --backlog idea']) {
+        assert.doesNotMatch(legitimate, ABSORBED_COMMAND);
       }
     });
 
-    test('no shipped line names /gsd-add-phase, /gsd-insert-phase or their colon and space forms', () => {
+    test('no shipped line names an absorbed phase or backlog command in any namespace', () => {
       const violations = [];
       for (const file of shippedFiles) {
         fs.readFileSync(file, 'utf8').split(/\r?\n/).forEach((line, index) => {
-          if (ABSORBED_PHASE_COMMAND.test(line)) violations.push(`${relative(file)}:${index + 1}: ${line.trim()}`);
+          if (ABSORBED_COMMAND.test(line)) violations.push(`${relative(file)}:${index + 1}: ${line.trim()}`);
         });
       }
-      assert.deepStrictEqual(violations, [], 'use /gsd:phase "<description>" or /gsd:phase --insert <after-phase> "<description>"');
+      assert.deepStrictEqual(violations, [], 'use /gsd:phase, /gsd:phase --insert, or /gsd:capture --backlog');
     });
   });
 
