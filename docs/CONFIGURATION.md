@@ -2363,7 +2363,7 @@ GSD_AUDIT=1 gsd plan
 }
 ```
 
-Or set it with `gsd config-set audit.enabled true` — the value must be a boolean. The key is read from the project config, the same value `config-get audit.enabled` reports (a workstream's own setting wins over the root config's). Either source turns the trail on and neither turns the other off: `GSD_AUDIT=0` does not override `audit.enabled: true`.
+Or set it with `gsd config-set audit.enabled true` — the value must be a boolean. The key is read from the project config (a workstream's own setting wins over the root config's). A malformed workstream config sets no value, so the audit reader inherits the root config's value; `config-get audit.enabled` instead fails with `CONFIG_PARSE_FAILED` for that file. Either source turns the trail on and neither turns the other off: `GSD_AUDIT=0` does not override `audit.enabled: true`.
 
 #### Settings
 
