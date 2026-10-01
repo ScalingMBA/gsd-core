@@ -12,8 +12,9 @@
  * Moved tests and why each needs a real OS:
  * - #4976 config-new-project (nine tests) and init new-project (two tests) —
  *   defaults, migration writes and provider keys must resolve through GSD_HOME
- *   instead of the separate OS home (USERPROFILE on Windows). Both groups retain
- *   their original test titles and bodies from config.test.cjs / init.test.cjs.
+ *   instead of the separate OS home (USERPROFILE on Windows). These regressions
+ *   are introduced by PR #5015 and live in this platform suite; they were not
+ *   part of the upstream config.test.cjs / init.test.cjs platform split.
  * - "detects Brave Search from file-based key" — reads brave_api_key from the
  *   sandboxed home directory, resolved via USERPROFILE on Windows (windows-env-var)
  * - "detects Tavily Search from env var" — asserts TAVILY_API_KEY detection resolved
