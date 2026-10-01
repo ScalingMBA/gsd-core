@@ -775,6 +775,47 @@ function resolveCommand(words) {
   return { base: lastSegment(words[idx].text).toLowerCase(), operands: words.slice(idx + 1) };
 }
 
+// Config scanning recognizes these Git globals too; the narrower #4856
+// pathspec-exemption vocabulary intentionally remains unchanged.
+const GIT_CONFIG_GLOBAL_FLAGS = new Set([
+  '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
+]);
+
+/**
+ * Rescan only the command-valued -c keys selected by #5045. This deliberately
+ * does not resolve config files, --config-env/GIT_CONFIG_* values, or other
+ * executing keys (diff drivers, filters, credential helpers, ssh, gpg).
+ * Those are documented gaps, not a promise of complete Git config analysis.
+ * Global option values and subcommand arguments are data, not more -c flags.
+ */
+function scanGitConfig(operands, depth) {
+  for (let k = 0; k < operands.length; k++) {
+    const t = operands[k].text;
+    let config;
+    if (t === '-c') config = operands[++k]?.text;
+    else if (t.startsWith('-c')) config = t.slice(2);
+    else {
+      if (GIT_GLOBAL_VALUE_OPTIONS.has(t)) { k++; continue; }
+      if (GIT_GLOBAL_FLAGS.has(t) || GIT_CONFIG_GLOBAL_FLAGS.has(t)) continue;
+      if (GIT_GLOBAL_VALUE_OPTIONS.has(t.split('=')[0]) ||
+          t.startsWith('--exec-path=') || t.startsWith('--attr-source=')) continue;
+      break;
+    }
+    if (config === undefined) return null;
+    const eq = config.indexOf('=');
+    if (eq === -1) continue;
+    const key = config.slice(0, eq).toLowerCase();
+    const value = config.slice(eq + 1);
+    let script;
+    if (key.startsWith('alias.') && value.startsWith('!')) script = value.slice(1);
+    else if (key === 'diff.external') script = value;
+    else continue;
+    const hit = findSecretRead(script, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 // Operand indices the segment's command consumes as a NAME, never as
 // CONTENTS (#4639, #4856). Only these positions skip the operand check;
 // every other operand is still checked, so a carve-out cannot launder a read
@@ -991,6 +1032,12 @@ function findSecretRead(command, depth) {
       const hit = scanShellInterpreter(operands, heredocs, hereStrings, s, bySeg, sepAfter, depth);
       if (hit) return hit;
       // `bash .env` (file mode) is caught by the operand check below.
+    }
+
+    // Git -c can carry a shell script instead of a file-name operand (#5045).
+    if ((base === 'git' || base === 'git.exe') && depth < MAX_NESTING_DEPTH) {
+      const hit = scanGitConfig(operands, depth);
+      if (hit) return hit;
     }
 
     if (NON_READING_COMMANDS.has(base)) continue;
