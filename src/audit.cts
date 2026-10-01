@@ -435,8 +435,8 @@ function deriveOpenQuestionsDigest(questions: string[]): string {
  * this file in the debug directory. It is a document, not a session: it has no
  * frontmatter, so its status would derive `unknown` and read as open forever.
  * Excluded by this fixed name only. Any other file with missing or unparseable
- * frontmatter is still an open session. The active-session globs in
- * workflows/debug.md and agents/gsd-debugger.md exclude the same name (#5011).
+ * frontmatter is still an open session. Every shipped debug-directory reader
+ * excludes the same name from active sessions (#5011).
  */
 const DEBUG_KNOWLEDGE_BASE_FILENAME = 'knowledge-base.md';
 
