@@ -334,18 +334,20 @@ const RUNTIME_CONFIG_FILES = Object.freeze(['settings.json', 'hooks.json', 'conf
  * the installer did not write — a hand-edited settings.json, another tool's
  * writer — may spell its path with Windows-native backslashes, and an anchor
  * and haystack in different separator forms never match, so the dangling-hook
- * check would skip it silently. JSON and TOML basic strings double every
- * backslash on write, so `\\` collapses to `\` first; projecting per
- * backslash afterwards keeps a UNC `\\server\share` as `//server/share`, the
- * form posixNormalize gives the anchor.
+ * check would skip it silently. Scan both the backslash-unescaped projection
+ * (JSON and TOML basic strings) and the unchanged projection (TOML literal
+ * strings). Unescaping a literal UNC prefix drops a leading separator, so
+ * neither projection alone is sufficient. A Set combines identical paths.
  */
 function configuredEntrypointsIn(text, configDir) {
   const normalizedPrefix = shellCmdProjection.posixNormalize(configDir).replace(/\/+$/, '') + '/';
   const scriptPathRe = new RegExp(`${escapeRegex(normalizedPrefix)}[^"']{0,400}?\\.(?:js|cjs|mjs|sh|cmd|ps1)`, 'g');
-  const scannedText = shellCmdProjection.posixNormalize(text.replace(/\\\\/g, '\\'));
   const found = new Set();
-  for (const match of scannedText.matchAll(scriptPathRe)) {
-    found.add(path.resolve(match[0]));
+  for (const candidateText of [text.replace(/\\\\/g, '\\'), text]) {
+    const scannedText = shellCmdProjection.posixNormalize(candidateText);
+    for (const match of scannedText.matchAll(scriptPathRe)) {
+      found.add(path.resolve(match[0]));
+    }
   }
   return [...found];
 }

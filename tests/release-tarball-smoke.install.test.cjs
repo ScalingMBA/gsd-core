@@ -78,6 +78,32 @@ describe('release-tarball-smoke: install timeout ceiling', () => {
   });
 });
 
+describe('configured entrypoint UNC spellings', () => {
+  const configDir = '\\\\fileserver\\home\\Jane Doe\\.claude';
+  const literalScript = configDir + '\\hooks\\a-literal.js';
+  const basicScript = configDir + '\\hooks\\z-basic.ps1';
+  // Canonical identities come from the fixture paths, independently of the scanner.
+  const literalExpected = path.resolve('//fileserver/home/Jane Doe/.claude/hooks/a-literal.js');
+  const basicExpected = path.resolve('//fileserver/home/Jane Doe/.claude/hooks/z-basic.ps1');
+
+  test('a TOML literal registration preserves both leading UNC separators', () => {
+    const text = "command = 'node " + literalScript + "'";
+    assert.deepEqual(configuredEntrypointsIn(text, configDir), [literalExpected]);
+  });
+
+  test('literal and basic TOML registrations both contribute their distinct scripts', () => {
+    const text = "literal = 'node " + literalScript + "'\n"
+      + 'basic = ' + JSON.stringify('pwsh ' + basicScript);
+    assert.deepEqual(configuredEntrypointsIn(text, configDir).sort(), [literalExpected, basicExpected]);
+  });
+
+  test('literal and escaped registrations of the same script are deduplicated', () => {
+    const text = "literal = 'node " + literalScript + "'\n"
+      + 'basic = ' + JSON.stringify('node ' + literalScript);
+    assert.deepEqual(configuredEntrypointsIn(text, configDir), [literalExpected]);
+  });
+});
+
 describe('release-tarball-smoke', () => {
   // Shared fixture state: pack the tarball once, install it once, reuse for all tests.
   let packDir;
