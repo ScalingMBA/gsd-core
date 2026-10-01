@@ -1374,7 +1374,7 @@ describe('config-set/config-get audit.enabled (#4975)', () => {
   test('config-set accepts audit.enabled and config-get round-trips it as a boolean', (t) => {
     const tmpDir = createTempProject('gsd-4975-config-');
     t.after(() => cleanup(tmpDir));
-    const env = { HOME: tmpDir, USERPROFILE: tmpDir };
+    const env = homeSandboxEnv(tmpDir);
 
     for (const value of [true, false]) {
       const set = runGsdTools(['config-set', 'audit.enabled', String(value)], tmpDir, env);
@@ -1394,7 +1394,7 @@ describe('config-set/config-get audit.enabled (#4975)', () => {
   test('config-set rejects a non-boolean audit.enabled without modifying config.json', (t) => {
     const tmpDir = createTempProject('gsd-4975-config-invalid-');
     t.after(() => cleanup(tmpDir));
-    const env = { HOME: tmpDir, USERPROFILE: tmpDir, GSD_JSON_ERRORS: '1' };
+    const env = { ...homeSandboxEnv(tmpDir), GSD_JSON_ERRORS: '1' };
     writeConfig(tmpDir, { audit: { enabled: false }, sentinel: 'preserve' });
     const configPath = path.join(tmpDir, '.planning', 'config.json');
     const before = fs.readFileSync(configPath, 'utf-8');
