@@ -104,6 +104,74 @@ describe('configured entrypoint UNC spellings', () => {
   });
 });
 
+// configuredEntrypointsIn scans unparsed config text, so it is parser-class
+// (TESTING-STANDARDS.md "Property-based testing tier"). Property: however a
+// registration spells a script path — forward slashes, JSON-escaped
+// backslashes, or TOML-literal single backslashes, under a drive or a UNC
+// home — every spelling resolves to that script's one canonical entry, distinct
+// scripts stay distinct, and no script is reported twice.
+describe('configured entrypoint spellings (property)', () => {
+  const fc = require('./helpers/fast-check-setup.cjs');
+
+  // Path segments without dots (no `.`/`..`, no early `.js` that would end the
+  // lazy match) and without quotes (the scanner's documented string delimiters).
+  const segment = fc.string({
+    unit: fc.constantFrom(...'abcXYZ019 _-éü'),
+    minLength: 1,
+    maxLength: 8,
+  }).filter((s) => s.trim() === s);
+  // Root segments in both separator forms, built independently of the scanner.
+  const driveRoot = fc.record({
+    letter: fc.constantFrom('C', 'D', 'Z'),
+    dirs: fc.array(segment, { minLength: 1, maxLength: 3 }),
+  }).map(({ letter, dirs }) => ({
+    native: `${letter}:\\${dirs.join('\\')}`,
+    posix: `${letter}:/${dirs.join('/')}`,
+  }));
+  const uncRoot = fc.array(segment, { minLength: 2, maxLength: 4 }).map((dirs) => ({
+    native: `\\\\${dirs.join('\\')}`,
+    posix: `//${dirs.join('/')}`,
+  }));
+  const script = fc.record({
+    dirs: fc.array(segment, { maxLength: 2 }),
+    name: segment,
+    ext: fc.constantFrom('js', 'cjs', 'mjs', 'sh', 'cmd', 'ps1'),
+  }).map(({ dirs, name, ext }) => [...dirs, `${name}.${ext}`]);
+
+  const SPELLINGS = {
+    forwardSlashJson: (s) => JSON.stringify({ command: `node "${s.posix}"` }),
+    escapedJson: (s) => JSON.stringify({ command: `node "${s.native}"` }),
+    tomlLiteral: (s) => `command = 'node ${s.native}'`,
+  };
+
+  test('every spelling of a script resolves to its single canonical entry', () => {
+    fc.assert(
+      fc.property(
+        fc.oneof(driveRoot, uncRoot),
+        fc.uniqueArray(script, { minLength: 1, maxLength: 3, selector: (parts) => parts.join('/') }),
+        fc.array(fc.shuffledSubarray(Object.keys(SPELLINGS), { minLength: 1 }), { minLength: 3, maxLength: 3 }),
+        (root, scripts, spellingsPerScript) => {
+          const configDir = `${root.native}\\.claude`;
+          const lines = [];
+          const expected = [];
+          scripts.forEach((parts, i) => {
+            const s = {
+              native: `${root.native}\\.claude\\${parts.join('\\')}`,
+              posix: `${root.posix}/.claude/${parts.join('/')}`,
+            };
+            for (const spelling of spellingsPerScript[i]) lines.push(SPELLINGS[spelling](s));
+            expected.push(path.resolve(s.posix));
+          });
+
+          const found = configuredEntrypointsIn(lines.join('\n'), configDir);
+
+          assert.deepEqual([...found].sort(), [...expected].sort());
+        },
+      ),
+    );
+  });
+});
+
 describe('release-tarball-smoke', () => {
   // Shared fixture state: pack the tarball once, install it once, reuse for all tests.
   let packDir;
