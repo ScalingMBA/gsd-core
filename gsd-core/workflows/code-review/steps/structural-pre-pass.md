@@ -40,18 +40,25 @@ FALLOW_STDERR_TMP=$(mktemp)
 # Tier 3's scope step agree on the tip just because they agree on the base.
 FALLOW_SCOPE_ARGS=()
 if [ \"$FALLOW_SCOPE\" = \"phase\" ]; then
-  # #3995: phase-directory anchor — same derivation as the Tier-3 scope step
-  # (lockstep per #3191). A phase number is unique within a milestone, not a
-  # repository; the former message grep matched previous milestones'
-  # same-numbered phases and tail -1 selected the oldest.
-  FALLOW_PHASE_START=$(git log --format=\"%H\" --diff-filter=A -- \"${PHASE_DIR}\" 2>/dev/null | tail -1)
-  if [ -n \"$FALLOW_PHASE_START\" ]; then
-    if git rev-parse \"${FALLOW_PHASE_START}^\" >/dev/null 2>&1; then
-      FALLOW_BASE=\"${FALLOW_PHASE_START}^\"
-    else
-      FALLOW_BASE=\"${FALLOW_PHASE_START}\"
-    fi
-    FALLOW_SCOPE_ARGS=(--changed-since \"$FALLOW_BASE\")
+  # #5164: the base is the evaluation-scope resolver's `rangeBase` — the SAME
+  # phase-directory anchor the Tier-3 scope step reads (#3191/#3995), now from
+  # one owner instead of a second hand-rolled copy of that derivation. A phase
+  # number is unique within a milestone, not a repository, so the anchor is the
+  # parent of the first commit that added anything under the phase's directory.
+  # #5170: capture the resolver's status first. Exit 69 (UNAVAILABLE) is "could not look": its JSON
+  # carries no base, and a pipe into sed would hide that status and widen the audit silently.
+  FALLOW_SCOPE_JSON=$(gsd_run check evaluation-scope --phase "${PADDED_PHASE}" --raw 2>/dev/null) && FALLOW_SCOPE_RC=0 || FALLOW_SCOPE_RC=$?
+  FALLOW_BASE=""
+  if [ "$FALLOW_SCOPE_RC" -eq 0 ]; then
+    FALLOW_BASE=$(printf '%s' "$FALLOW_SCOPE_JSON" | sed -n 's/^ *"rangeBase": *"\([^"]*\)".*$/\1/p')
+  fi
+  if [ -n "$FALLOW_BASE" ]; then
+    FALLOW_SCOPE_ARGS=(--changed-since "$FALLOW_BASE")
+  elif [ "$FALLOW_SCOPE_RC" -ne 0 ]; then
+    # The widening to repo scope is kept, and stated: the phase base could not be resolved.
+    echo "WARNING: evaluation-scope could not resolve the phase base (exit ${FALLOW_SCOPE_RC}); fallow audits the whole repository, not the phase's changed files." >&2
+  else
+    echo "NOTE: no phase base commit found; fallow audits the whole repository." >&2
   fi
 fi
 
