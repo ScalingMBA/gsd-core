@@ -178,14 +178,21 @@ const GIT_PATHSPEC_SUBCOMMANDS = new Map([
   }],
 ]);
 
-// git's global options (its own usage line, git 2.49), needed to locate the
-// subcommand. A value option consumes the next word unless written
-// `--opt=value`; an option in neither set fails closed, so a value is never
-// read as the subcommand (`git -C ls-files show HEAD:.env` runs `show`).
-const GIT_GLOBAL_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env']);
+// git's global options (git(1), git 2.49) — the ONE vocabulary both the
+// #4856 pathspec exemption and the #5045 -c scan walk, via walkGitGlobals.
+// A value option consumes the next word unless written `--opt=value`;
+// `--exec-path` runs a subcommand only as `--exec-path=<path>` (bare, it
+// prints the path and exits). Any other option fails closed, so a value is
+// never read as the subcommand (`git -C ls-files show HEAD:.env` runs
+// `show`). git has no attached `-c<name>=<value>` form: it rejects it.
+const GIT_GLOBAL_VALUE_OPTIONS = new Set([
+  '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source',
+]);
+const GIT_GLOBAL_EQUALS_ONLY_OPTIONS = new Set(['--exec-path']);
 const GIT_GLOBAL_FLAGS = new Set([
   '-p', '--paginate', '-P', '--no-pager', '--no-replace-objects', '--no-lazy-fetch',
   '--no-optional-locks', '--no-advice', '--bare',
+  '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
 ]);
 
 // #4856: `cp`/`mv` write their destination and never print it, so a secret
@@ -775,12 +782,6 @@ function resolveCommand(words) {
   return { base: lastSegment(words[idx].text).toLowerCase(), operands: words.slice(idx + 1) };
 }
 
-// Config scanning recognizes these Git globals too; the narrower #4856
-// pathspec-exemption vocabulary intentionally remains unchanged.
-const GIT_CONFIG_GLOBAL_FLAGS = new Set([
-  '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
-]);
-
 /**
  * Rescan only the command-valued -c keys selected by #5045. This deliberately
  * does not resolve config files, --config-env/GIT_CONFIG_* values, or other
@@ -789,19 +790,7 @@ const GIT_CONFIG_GLOBAL_FLAGS = new Set([
  * Global option values and subcommand arguments are data, not more -c flags.
  */
 function scanGitConfig(operands, depth) {
-  for (let k = 0; k < operands.length; k++) {
-    const t = operands[k].text;
-    let config;
-    if (t === '-c') config = operands[++k]?.text;
-    else if (t.startsWith('-c')) config = t.slice(2);
-    else {
-      if (GIT_GLOBAL_VALUE_OPTIONS.has(t)) { k++; continue; }
-      if (GIT_GLOBAL_FLAGS.has(t) || GIT_CONFIG_GLOBAL_FLAGS.has(t)) continue;
-      if (GIT_GLOBAL_VALUE_OPTIONS.has(t.split('=')[0]) ||
-          t.startsWith('--exec-path=') || t.startsWith('--attr-source=')) continue;
-      break;
-    }
-    if (config === undefined) return null;
+  for (const config of walkGitGlobals(operands).configs) {
     const eq = config.indexOf('=');
     if (eq === -1) continue;
     const key = config.slice(0, eq).toLowerCase();
@@ -847,26 +836,34 @@ function isListedFlag(text, flags) {
   return /^-[A-Za-z]+$/.test(text) && [...text.slice(1)].every((ch) => flags.has(`-${ch}`));
 }
 
-// Index of git's subcommand past its global options, or -1 when an option
-// outside GIT_GLOBAL_VALUE_OPTIONS / GIT_GLOBAL_FLAGS precedes it.
-function gitSubcommandIndex(operands) {
+// Walks git's global options (see GIT_GLOBAL_VALUE_OPTIONS). `sub` is the
+// subcommand's index, or -1 when an unlisted option (or the end of the words)
+// comes first; `configs` holds every `-c` value seen on the way, in order.
+function walkGitGlobals(operands) {
+  const configs = [];
   for (let k = 0; k < operands.length; k++) {
     const t = operands[k].text;
-    if (!t.startsWith('-')) return k;
-    if (GIT_GLOBAL_VALUE_OPTIONS.has(t)) { k++; continue; }
+    if (!t.startsWith('-')) return { sub: k, configs };
+    if (GIT_GLOBAL_VALUE_OPTIONS.has(t)) {
+      if (t === '-c' && k + 1 < operands.length) configs.push(operands[k + 1].text);
+      k++;
+      continue;
+    }
     if (GIT_GLOBAL_FLAGS.has(t)) continue;
     const eq = t.indexOf('=');
-    const isLongValueForm = t.startsWith('--') && eq !== -1 && GIT_GLOBAL_VALUE_OPTIONS.has(t.slice(0, eq));
-    if (!isLongValueForm) return -1;
+    const name = eq === -1 ? t : t.slice(0, eq);
+    const isLongValueForm = t.startsWith('--') && eq !== -1 &&
+      (GIT_GLOBAL_VALUE_OPTIONS.has(name) || GIT_GLOBAL_EQUALS_ONLY_OPTIONS.has(name));
+    if (!isLongValueForm) return { sub: -1, configs };
   }
-  return -1;
+  return { sub: -1, configs };
 }
 
 // #4856: the pathspec operands of a GIT_PATHSPEC_SUBCOMMANDS invocation. git
 // permutes options, so one may follow a pathspec; after `--` every word is a
 // pathspec. The subcommand is matched case-sensitively, as git looks it up.
 function gitPathspecIndices(operands) {
-  const sub = gitSubcommandIndex(operands);
+  const { sub } = walkGitGlobals(operands);
   const spec = sub === -1 ? undefined : GIT_PATHSPEC_SUBCOMMANDS.get(operands[sub].text);
   if (!spec) return new Set();
   const pathspecs = new Set();

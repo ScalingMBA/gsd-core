@@ -84,10 +84,9 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
     ["git --icase-pathspecs -c diff.external='cat .env' diff", '.env'],
     ["git --exec-path=. -c alias.x='!cat .env' x", '.env'],
     ["git --attr-source=HEAD -c diff.external='cat .env' diff", '.env'],
+    ["git --attr-source HEAD -c alias.x='!cat .env' x", '.env'],
     ["git -c alias.x='!echo safe' show HEAD:.env", 'HEAD:.env'],
     ["git -c user.name=Example show HEAD:.env", 'HEAD:.env'],
-    ["git -calias.x='!cat .env' x", '.env'],
-    ["git -cdiff.external='cat .env' diff", '.env'],
     ["git -c ALIAS.X='!cat .env' x", '.env'],
     ["git -c DiFf.ExTeRnAl='cat .env' diff", '.env'],
     ["git -c alias.x='!cat config/.env.production' x", 'config/.env.production'],
@@ -136,6 +135,10 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
     "git -C '-calias.x=!cat .env' status",
     "git --git-dir='-calias.x=!cat .env' status",
     "git log -c 'alias.x=!cat .env'",
+    // git has no attached -c form: git 2.49 answers "unknown option:
+    // -calias.x=!cat .env" (exit 129) and runs nothing.
+    "git -calias.x='!cat .env' x",
+    "git -cdiff.external='cat .env' diff",
     "echo \"git -c alias.x='!cat .env' x\"",
     "echo -c 'alias.x=!cat .env'",
     "printf '%s' -c 'diff.external=cat .env'",
@@ -173,7 +176,7 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
     '-C repo', '--git-dir=repo/.git', '--work-tree repo',
     '--no-pager', '-c user.name=Example', '--config-env=user.name=GIT_NAME',
     '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs',
-    '--icase-pathspecs', '--exec-path=.', '--attr-source=HEAD',
+    '--icase-pathspecs', '--exec-path=.', '--attr-source=HEAD', '--attr-source HEAD',
   ), { maxLength: 3 });
   const SECRET = fc.constantFrom('.env', '.env.local', '.secrets', 'config/.env.production');
   const OPTIONS = { seed: 5045, numRuns: 40 };
@@ -181,10 +184,10 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
   test('property: global option permutations cannot hide a command-valued secret read', () => {
     fc.assert(fc.property(
       GLOBALS, SECRET, fc.constantFrom('cat', 'grep KEY'),
-      fc.constantFrom('alias.x', 'diff.external'), fc.boolean(),
-      (globals, secret, reader, key, attached) => {
+      fc.constantFrom('alias.x', 'diff.external'),
+      (globals, secret, reader, key) => {
         const script = `${key === 'alias.x' ? '!' : ''}${reader} ${secret}`;
-        const cmd = `git ${globals.join(' ')} ${attached ? '-c' : '-c '}${key}='${script}' ${key === 'alias.x' ? 'x' : 'diff'}`;
+        const cmd = `git ${globals.join(' ')} -c ${key}='${script}' ${key === 'alias.x' ? 'x' : 'diff'}`;
         assertBlocked(runHook(bash(cmd)), cmd, { tool: 'Bash', path: secret });
       },
     ), OPTIONS);
@@ -194,11 +197,21 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
     fc.assert(fc.property(
       GLOBALS, fc.constantFrom('.env', '.env.local', '.secrets'),
       fc.constantFrom('core.pager', 'user.name', 'diff.externalCommand'),
-      fc.boolean(), (globals, secret, key, attached) => {
-        const cmd = `git ${globals.join(' ')} ${attached ? '-c' : '-c '}${key}='cat ${secret}' log`;
+      (globals, secret, key) => {
+        const cmd = `git ${globals.join(' ')} -c ${key}='cat ${secret}' log`;
         assertAllowed(runHook(bash(cmd)), cmd);
       },
     ), OPTIONS);
+  });
+
+  // Parity with #4856: git parses its global options once, whatever follows,
+  // so the same global prefix that cannot hide a -c script must also reach
+  // the name-only pathspec exemption (`git ls-files` prints names only).
+  test('property: the #4856 pathspec exemption walks the same global options', () => {
+    fc.assert(fc.property(GLOBALS, SECRET, (globals, secret) => {
+      const cmd = `git ${globals.join(' ')} ls-files --error-unmatch ${secret}`;
+      assertAllowed(runHook(bash(cmd)), cmd);
+    }), OPTIONS);
   });
 });
 
