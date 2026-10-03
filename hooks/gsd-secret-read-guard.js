@@ -67,6 +67,8 @@
 //   `git check-ignore` / `git ls-files` / `git rm --cached`, and the
 //   destination of a one-source `cp`/`mv` (#4856). The #4856 carve-outs
 //   fail closed: an option they do not list withdraws them from the segment.
+//   A git global option the walker does not know also keeps the #5045 `-c`
+//   scan running over every later word (see walkGitGlobals).
 //   A shell interpreter (bash/sh/zsh/dash/ksh/su) has its script scanned
 //   whether it arrives via `-c '…'`, a `<( )` file operand, a heredoc /
 //   here-string, or a pipe from a knowable `echo`/`printf` source
@@ -178,17 +180,25 @@ const GIT_PATHSPEC_SUBCOMMANDS = new Map([
   }],
 ]);
 
-// git's global options (git(1), git 2.49) — the ONE vocabulary both the
-// #4856 pathspec exemption and the #5045 -c scan walk, via walkGitGlobals.
-// A value option consumes the next word unless written `--opt=value`;
+// git's global options (git.c handle_options, git 2.49) — the ONE vocabulary
+// both the #4856 pathspec exemption and the #5045 -c scan walk, via
+// walkGitGlobals. A value option consumes the next word; the long options in
+// GIT_GLOBAL_EQUALS_FORM_OPTIONS also take it attached as `--opt=value`.
+// `-C`, `-c` and the hidden `--shallow-file` accept only the separate word
+// (git rejects `--shallow-file=x` and `-c<name>=<value>`), and
 // `--exec-path` runs a subcommand only as `--exec-path=<path>` (bare, it
-// prints the path and exits). Any other option fails closed, so a value is
-// never read as the subcommand (`git -C ls-files show HEAD:.env` runs
-// `show`). git has no attached `-c<name>=<value>` form: it rejects it.
+// prints the path and exits). Any other option fails closed for both
+// consumers: its arity is unknown, so its value could be read as the
+// subcommand (`git -C ls-files show HEAD:.env` runs `show`). The pathspec
+// exemption is withdrawn, and the -c scan keeps collecting every later
+// `-c <value>` pair instead of stopping.
 const GIT_GLOBAL_VALUE_OPTIONS = new Set([
   '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source',
+  '--shallow-file',
 ]);
-const GIT_GLOBAL_EQUALS_ONLY_OPTIONS = new Set(['--exec-path']);
+const GIT_GLOBAL_EQUALS_FORM_OPTIONS = new Set([
+  '--git-dir', '--work-tree', '--namespace', '--config-env', '--attr-source', '--exec-path',
+]);
 const GIT_GLOBAL_FLAGS = new Set([
   '-p', '--paginate', '-P', '--no-pager', '--no-replace-objects', '--no-lazy-fetch',
   '--no-optional-locks', '--no-advice', '--bare',
@@ -839,6 +849,9 @@ function isListedFlag(text, flags) {
 // Walks git's global options (see GIT_GLOBAL_VALUE_OPTIONS). `sub` is the
 // subcommand's index, or -1 when an unlisted option (or the end of the words)
 // comes first; `configs` holds every `-c` value seen on the way, in order.
+// Past an unlisted option the subcommand cannot be located, so `configs`
+// conservatively takes the word after every later `-c` as well: a read
+// still needs a command-valued key, so a harmless value stays allowed.
 function walkGitGlobals(operands) {
   const configs = [];
   for (let k = 0; k < operands.length; k++) {
@@ -851,10 +864,11 @@ function walkGitGlobals(operands) {
     }
     if (GIT_GLOBAL_FLAGS.has(t)) continue;
     const eq = t.indexOf('=');
-    const name = eq === -1 ? t : t.slice(0, eq);
-    const isLongValueForm = t.startsWith('--') && eq !== -1 &&
-      (GIT_GLOBAL_VALUE_OPTIONS.has(name) || GIT_GLOBAL_EQUALS_ONLY_OPTIONS.has(name));
-    if (!isLongValueForm) return { sub: -1, configs };
+    if (t.startsWith('--') && eq !== -1 && GIT_GLOBAL_EQUALS_FORM_OPTIONS.has(t.slice(0, eq))) continue;
+    for (let j = k + 1; j + 1 < operands.length; j++) {
+      if (operands[j].text === '-c') configs.push(operands[++j].text);
+    }
+    return { sub: -1, configs };
   }
   return { sub: -1, configs };
 }

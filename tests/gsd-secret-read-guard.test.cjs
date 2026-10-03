@@ -101,6 +101,16 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
     ["git -c alias.x='!echo safe; cat .env' x", '.env'],
     ["git -c alias.x='!bash -c \"cat .env\"' x", '.env'],
     ["git -c diff.external='cat < .env' diff", '.env'],
+    // --shallow-file <path> is a hidden git global option (git.c
+    // handle_options); git 2.49 runs the alias behind it.
+    ["git --shallow-file x -c alias.x='!cat .env' x", '.env'],
+    // An option the walker does not know has an unknown arity, so the -c scan
+    // must keep going past it, and past a word that may be its value.
+    ["git --frobnicate -c alias.x='!cat .env' x", '.env'],
+    ["git --frobnicate value -c diff.external='cat .env' diff", '.env'],
+    ["git --frobnicate -c user.name=Example -c alias.x='!cat .env' x", '.env'],
+    // ...while the #4856 pathspec exemption still withdraws behind it.
+    ['git --frobnicate ls-files --error-unmatch .env', '.env'],
     ["env TRACE=on git -c alias.x='!cat .env' x", '.env'],
     ["cd repo && git -c alias.x='!cat .env' x", '.env'],
     ["git -c alias.x='!cat .env' ls-files .env", '.env'],
@@ -142,6 +152,9 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
     "echo \"git -c alias.x='!cat .env' x\"",
     "echo -c 'alias.x=!cat .env'",
     "printf '%s' -c 'diff.external=cat .env'",
+    // Unknown leading option: only a command-valued key reading a secret blocks.
+    "git --frobnicate -c user.name='cat .env' log",
+    "git --frobnicate -c alias.x='!echo safe' x",
   ];
   for (const cmd of allows) {
     test(`allows ${JSON.stringify(cmd)}`, () => {
@@ -172,12 +185,32 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
   // Independent argv vocabularies, fixed seed, real JSON-stdin hook.
   // A global option and its value are one fragment so generation preserves
   // the boundary rather than accidentally treating the value as a command.
-  const GLOBALS = fc.array(fc.constantFrom(
-    '-C repo', '--git-dir=repo/.git', '--work-tree repo',
-    '--no-pager', '-c user.name=Example', '--config-env=user.name=GIT_NAME',
-    '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs',
-    '--icase-pathspecs', '--exec-path=.', '--attr-source=HEAD', '--attr-source HEAD',
-  ), { maxLength: 3 });
+  // Every global option git 2.49 accepts before a subcommand that does not
+  // exit on its own (git(1) plus git.c's hidden --shallow-file), in each
+  // value form git accepts — confirmed by running them in front of an alias.
+  const GLOBAL_FORMS = [
+    '-C repo', '-c user.name=Example', '--exec-path=.',
+    '-p', '--paginate', '-P', '--no-pager',
+    '--no-replace-objects', '--no-lazy-fetch', '--no-optional-locks', '--no-advice', '--bare',
+    '--git-dir=repo/.git', '--git-dir repo/.git', '--work-tree=repo', '--work-tree repo',
+    '--namespace=ns', '--namespace ns',
+    '--config-env=user.name=GIT_NAME', '--config-env user.name=GIT_NAME',
+    '--attr-source=HEAD', '--attr-source HEAD', '--shallow-file x',
+    '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs',
+  ];
+  const GLOBALS = fc.array(fc.constantFrom(...GLOBAL_FORMS), { maxLength: 3 });
+
+  // Each form on its own, so no option depends on the sampler drawing it: the
+  // walk must step over it to the subcommand, where log's -c argument is data
+  // and ls-files' pathspec is a name (#4856 parity).
+  for (const form of GLOBAL_FORMS) {
+    test(`global ${JSON.stringify(form)} ends at the subcommand for the -c scan and the pathspec exemption`, () => {
+      const logCmd = `git ${form} log -c 'alias.x=!cat .env'`;
+      assertAllowed(runHook(bash(logCmd)), logCmd);
+      const lsCmd = `git ${form} ls-files --error-unmatch .env`;
+      assertAllowed(runHook(bash(lsCmd)), lsCmd);
+    });
+  }
   const SECRET = fc.constantFrom('.env', '.env.local', '.secrets', 'config/.env.production');
   const OPTIONS = { seed: 5045, numRuns: 40 };
 
@@ -188,6 +221,22 @@ describe('gsd-secret-read-guard: command-valued git config (#5045)', () => {
       (globals, secret, reader, key) => {
         const script = `${key === 'alias.x' ? '!' : ''}${reader} ${secret}`;
         const cmd = `git ${globals.join(' ')} -c ${key}='${script}' ${key === 'alias.x' ? 'x' : 'diff'}`;
+        assertBlocked(runHook(bash(cmd)), cmd, { tool: 'Bash', path: secret });
+      },
+    ), OPTIONS);
+  });
+
+  // An option outside git's vocabulary (a future or mistyped one), with or
+  // without a value word, anywhere among the globals: the -c scan fails closed.
+  const UNKNOWN_GLOBAL = fc.constantFrom('--frobnicate', '--frobnicate value', '--future-opt=x', '-Z');
+  test('property: an unknown global option cannot hide a command-valued secret read', () => {
+    fc.assert(fc.property(
+      GLOBALS, UNKNOWN_GLOBAL, fc.nat(), SECRET, fc.constantFrom('alias.x', 'diff.external'),
+      (globals, unknown, at, secret, key) => {
+        const words = [...globals];
+        words.splice(at % (words.length + 1), 0, unknown);
+        const script = `${key === 'alias.x' ? '!' : ''}cat ${secret}`;
+        const cmd = `git ${words.join(' ')} -c ${key}='${script}' ${key === 'alias.x' ? 'x' : 'diff'}`;
         assertBlocked(runHook(bash(cmd)), cmd, { tool: 'Bash', path: secret });
       },
     ), OPTIONS);
