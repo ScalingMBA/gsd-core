@@ -652,7 +652,7 @@ function safeRealpath(p) {
 // nor contains the caller's HOME. (#5083) A prefix check against the caller's
 // HOME cannot say this on Windows, where os.tmpdir() (%LOCALAPPDATA%\Temp) is
 // inside the user profile, so a correctly sandboxed cache still starts with
-// the HOME path. `pathApi` lets Test 5 run Windows-shaped paths on any host.
+// the HOME path. `pathApi` lets Test 6 run Windows-shaped paths on any host.
 function isIsolatedNpmCache({ cacheDir, sandboxHome, callerHome }, pathApi = path) {
   const isWithin = (child, parent) => {
     const rel = pathApi.relative(parent, child);
@@ -932,14 +932,12 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
     );
   });
 
-  // ── Test 5 — Test 2's isolation check holds where tmpdir sits inside HOME ──
+  // ── Test 5 — runNpm stays isolated when the caller's tmpdir is inside HOME ──
   // (#5083) On Windows os.tmpdir() is %LOCALAPPDATA%\Temp, inside the user
   // profile, so a correctly sandboxed cache still starts with the caller's
-  // HOME path. This suite runs on Linux in CI, so the Windows-shaped cases go
-  // through path.win32 to hold on every host.
-  // This portable fixture recreates the Windows layout on every host. The
-  // actual npm subprocess must remain isolated even though its cache path
-  // necessarily starts with the caller HOME.
+  // HOME path. This test points the caller's HOME and temp vars at a nested
+  // layout, recreating that topology on every host, and checks the real npm
+  // subprocess against isIsolatedNpmCache().
   test('runNpm remains isolated when the caller temp directory is inside HOME', (t) => {
     const { runNode } = require('./helpers/process-seam.cjs');
     const callerHome = createTempDir('gsd-npm-parent-home-');
@@ -970,6 +968,10 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
     assert.equal(isIsolatedNpmCache(paths), true);
   });
 
+  // ── Test 6 — isIsolatedNpmCache() path matrix ────────────────────────────
+  // (#5083) Containment edge cases for the isolation check: sibling prefixes,
+  // parent escapes, cross-drive and case-insensitive Windows paths. CI runs
+  // this suite on Linux, so Windows-shaped rows go through path.win32.
   test('the npm cache isolation check accepts a sandbox inside HOME and rejects one that is or contains HOME', async (t) => {
     const winHome = 'C:\\Users\\dev';
     const winSandbox = `${winHome}\\AppData\\Local\\Temp\\npm-home-AbC123`;
@@ -1012,81 +1014,81 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
         isolated: false,
       },
       {
-        label: "POSIX sibling prefix is outside the sandbox",
+        label: 'POSIX sibling prefix is outside the sandbox',
         pathApi: path.posix,
-        paths: {"cacheDir":"/tmp/npm-home-AbC123-sibling/.npm","sandboxHome":"/tmp/npm-home-AbC123","callerHome":"/home/dev"},
+        paths: { cacheDir: '/tmp/npm-home-AbC123-sibling/.npm', sandboxHome: '/tmp/npm-home-AbC123', callerHome: '/home/dev' },
         isolated: false,
       },
       {
-        label: "POSIX ..cache is a child name, not a parent escape",
+        label: 'POSIX ..cache is a child name, not a parent escape',
         pathApi: path.posix,
-        paths: {"cacheDir":"/tmp/npm-home-AbC123/..cache","sandboxHome":"/tmp/npm-home-AbC123","callerHome":"/home/dev"},
+        paths: { cacheDir: '/tmp/npm-home-AbC123/..cache', sandboxHome: '/tmp/npm-home-AbC123', callerHome: '/home/dev' },
         isolated: true,
       },
       {
-        label: "POSIX exact parent is outside the sandbox",
+        label: 'POSIX exact parent is outside the sandbox',
         pathApi: path.posix,
-        paths: {"cacheDir":"/tmp","sandboxHome":"/tmp/npm-home-AbC123","callerHome":"/home/dev"},
+        paths: { cacheDir: '/tmp', sandboxHome: '/tmp/npm-home-AbC123', callerHome: '/home/dev' },
         isolated: false,
       },
       {
-        label: "POSIX parent escape to another directory is outside",
+        label: 'POSIX parent escape to another directory is outside',
         pathApi: path.posix,
-        paths: {"cacheDir":"/tmp/outside/.npm","sandboxHome":"/tmp/npm-home-AbC123","callerHome":"/home/dev"},
+        paths: { cacheDir: '/tmp/outside/.npm', sandboxHome: '/tmp/npm-home-AbC123', callerHome: '/home/dev' },
         isolated: false,
       },
       {
-        label: "POSIX cache equal to the isolated sandbox is allowed",
+        label: 'POSIX cache equal to the isolated sandbox is allowed',
         pathApi: path.posix,
-        paths: {"cacheDir":"/tmp/npm-home-AbC123","sandboxHome":"/tmp/npm-home-AbC123","callerHome":"/home/dev"},
+        paths: { cacheDir: '/tmp/npm-home-AbC123', sandboxHome: '/tmp/npm-home-AbC123', callerHome: '/home/dev' },
         isolated: true,
       },
       {
-        label: "Windows sibling prefix is outside the sandbox",
+        label: 'Windows sibling prefix is outside the sandbox',
         pathApi: path.win32,
-        paths: {"cacheDir":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123-sibling\\.npm","sandboxHome":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","callerHome":"C:\\Users\\dev"},
+        paths: { cacheDir: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123-sibling\\.npm', sandboxHome: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', callerHome: 'C:\\Users\\dev' },
         isolated: false,
       },
       {
-        label: "Windows ..cache is a child name, not a parent escape",
+        label: 'Windows ..cache is a child name, not a parent escape',
         pathApi: path.win32,
-        paths: {"cacheDir":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123\\..cache","sandboxHome":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","callerHome":"C:\\Users\\dev"},
+        paths: { cacheDir: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123\\..cache', sandboxHome: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', callerHome: 'C:\\Users\\dev' },
         isolated: true,
       },
       {
-        label: "Windows exact parent is outside the sandbox",
+        label: 'Windows exact parent is outside the sandbox',
         pathApi: path.win32,
-        paths: {"cacheDir":"C:\\Users\\dev\\AppData\\Local\\Temp","sandboxHome":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","callerHome":"C:\\Users\\dev"},
+        paths: { cacheDir: 'C:\\Users\\dev\\AppData\\Local\\Temp', sandboxHome: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', callerHome: 'C:\\Users\\dev' },
         isolated: false,
       },
       {
-        label: "Windows parent escape to another directory is outside",
+        label: 'Windows parent escape to another directory is outside',
         pathApi: path.win32,
-        paths: {"cacheDir":"C:\\Users\\dev\\AppData\\Local\\Temp\\outside\\.npm","sandboxHome":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","callerHome":"C:\\Users\\dev"},
+        paths: { cacheDir: 'C:\\Users\\dev\\AppData\\Local\\Temp\\outside\\.npm', sandboxHome: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', callerHome: 'C:\\Users\\dev' },
         isolated: false,
       },
       {
-        label: "Windows cache equal to the isolated sandbox is allowed",
+        label: 'Windows cache equal to the isolated sandbox is allowed',
         pathApi: path.win32,
-        paths: {"cacheDir":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","sandboxHome":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","callerHome":"C:\\Users\\dev"},
+        paths: { cacheDir: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', sandboxHome: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', callerHome: 'C:\\Users\\dev' },
         isolated: true,
       },
       {
-        label: "Windows cache on another drive is outside the sandbox",
+        label: 'Windows cache on another drive is outside the sandbox',
         pathApi: path.win32,
-        paths: {"cacheDir":"D:\\npm-cache","sandboxHome":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","callerHome":"C:\\Users\\dev"},
+        paths: { cacheDir: 'D:\\npm-cache', sandboxHome: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', callerHome: 'C:\\Users\\dev' },
         isolated: false,
       },
       {
-        label: "Windows containment ignores path casing",
+        label: 'Windows containment ignores path casing',
         pathApi: path.win32,
-        paths: {"cacheDir":"c:\\users\\dev\\appdata\\local\\temp\\npm-home-abc123\\.NPM","sandboxHome":"C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123","callerHome":"C:\\USERS\\DEV"},
+        paths: { cacheDir: 'c:\\users\\dev\\appdata\\local\\temp\\npm-home-abc123\\.NPM', sandboxHome: 'C:\\Users\\dev\\AppData\\Local\\Temp\\npm-home-AbC123', callerHome: 'C:\\USERS\\DEV' },
         isolated: true,
       },
       {
-        label: "Windows caller HOME equality ignores path casing",
+        label: 'Windows caller HOME equality ignores path casing',
         pathApi: path.win32,
-        paths: {"cacheDir":"c:\\users\\dev\\.npm","sandboxHome":"c:\\users\\dev","callerHome":"C:\\USERS\\DEV"},
+        paths: { cacheDir: 'c:\\users\\dev\\.npm', sandboxHome: 'c:\\users\\dev', callerHome: 'C:\\USERS\\DEV' },
         isolated: false,
       },
     ];
